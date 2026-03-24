@@ -1,0 +1,5 @@
+{
+  "name": "Jolt Grid",
+  "description": "A physics-based 2D game where you control a dot with WASD to collect other dots and score points.",
+  "requestFramePermissions": []
+}
