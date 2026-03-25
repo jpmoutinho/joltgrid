@@ -52,6 +52,7 @@ interface GameConfig {
   joltDistance: number;
   moveSpeed: number;
   killLimit: number;
+  aiEnabled: boolean;
 }
 
 class SoundManager {
@@ -415,6 +416,15 @@ class SoundManager {
     gain.gain.setTargetAtTime(targetGain, this.ctx.currentTime, 0.2);
   }
 
+  stopEngines() {
+    if (!this.ctx) return;
+    this.engineGains.forEach(gain => {
+      if (gain) {
+        gain.gain.setTargetAtTime(0, this.ctx!.currentTime, 0.1);
+      }
+    });
+  }
+
   playGameOver() {
     if (!this.ctx || !this.masterGain) return;
     const now = this.ctx.currentTime;
@@ -504,7 +514,8 @@ export default function App() {
   const [config, _setConfig] = useState<GameConfig>({
     joltDistance: 250,
     moveSpeed: 0.3,
-    killLimit: 10
+    killLimit: 10,
+    aiEnabled: false
   });
   const configRef = useRef<GameConfig>(config);
   const setConfig = (c: GameConfig | ((prev: GameConfig) => GameConfig)) => {
@@ -661,6 +672,131 @@ export default function App() {
     connectionsRef.current = { blue: blueConns, red: redConns };
   };
 
+  const performAction = (action: 'dot' | 'burst' | 'dash', playerId: 'blue' | 'red') => {
+    const playerIdx = playerId === 'blue' ? 0 : 1;
+    const player = playersRef.current[playerIdx];
+    const time = performance.now();
+
+    if (action === 'dot') {
+      // Check safe zones
+      const blueSpawn = getSpawnPos('blue', window.innerWidth, window.innerHeight);
+      const redSpawn = getSpawnPos('red', window.innerWidth, window.innerHeight);
+      const distToBlueSafe = Math.sqrt((player.pos.x - blueSpawn.x)**2 + (player.pos.y - blueSpawn.y)**2);
+      const distToRedSafe = Math.sqrt((player.pos.x - redSpawn.x)**2 + (player.pos.y - redSpawn.y)**2);
+      const safeRadius = getSafeZoneRadius();
+      if (distToBlueSafe < safeRadius || distToRedSafe < safeRadius) return;
+
+      setScores(current => {
+        if (current[playerId] > 0) {
+          const newDot = {
+            pos: { ...player.pos },
+            radius: 6,
+            id: nextPlacedDotIdRef.current++,
+            playerId,
+            createdAt: time
+          };
+          const threshold = configRef.current.joltDistance;
+          const thresholdSq = threshold * threshold;
+          for (const existingDot of placedDotsRef.current) {
+            if (existingDot.playerId !== playerId) continue;
+            const dx = newDot.pos.x - existingDot.pos.x;
+            const dy = newDot.pos.y - existingDot.pos.y;
+            const distSq = dx * dx + dy * dy;
+            if (distSq < thresholdSq) {
+              connectionsRef.current[playerId].push({ p1: newDot.pos, p2: existingDot.pos });
+            }
+          }
+          placedDotsRef.current.push(newDot);
+          updateConnections(placedDotsRef.current, window.innerHeight);
+          return { ...current, [playerId]: current[playerId] - 1 };
+        }
+        return current;
+      });
+    } else if (action === 'burst') {
+      if (player.lastPowerTime && time - player.lastPowerTime < POWER_COOLDOWN) return;
+      player.lastPowerTime = time;
+      player.burstEffect = { startTime: time, pos: { ...player.pos } };
+      soundManager.playBurst();
+    } else if (action === 'dash') {
+      if (player.lastPowerTime && time - player.lastPowerTime < POWER_COOLDOWN) return;
+      const speed = Math.sqrt(player.vel.x ** 2 + player.vel.y ** 2);
+      if (speed < 0.1) return;
+      const dirX = player.vel.x / speed;
+      const dirY = player.vel.y / speed;
+      const startPos = { ...player.pos };
+      player.pos.x += dirX * DASH_DISTANCE;
+      player.pos.y += dirY * DASH_DISTANCE;
+      const endPos = { ...player.pos };
+      player.lastPowerTime = time;
+      player.dashEffect = { startTime: time, startPos, endPos };
+      soundManager.playDash();
+    }
+  };
+
+  const getAIInput = (player: GameObject, adversary: GameObject, collectibles: Collectible[], time: number) => {
+    let ax = 0;
+    let ay = 0;
+    let action: 'dot' | 'burst' | 'dash' | null = null;
+
+    // 1. Find nearest collectible
+    let nearestCollectible = null;
+    let minDist = Infinity;
+    for (const c of collectibles) {
+      const d = Math.sqrt((c.pos.x - player.pos.x)**2 + (c.pos.y - player.pos.y)**2);
+      if (d < minDist) {
+        minDist = d;
+        nearestCollectible = c;
+      }
+    }
+
+    if (nearestCollectible) {
+      const dx = nearestCollectible.pos.x - player.pos.x;
+      const dy = nearestCollectible.pos.y - player.pos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        ax = (dx / dist) * configRef.current.moveSpeed;
+        ay = (dy / dist) * configRef.current.moveSpeed;
+      }
+    }
+
+    // 2. Avoid adversary's jolts (if deadly)
+    const joltProgress = time - lastHeartbeatRef.current;
+    const isDeadly = joltProgress > JOLT_DURATION * 0.33 && joltProgress < JOLT_DURATION * 0.66;
+    
+    if (isDeadly) {
+      for (const conn of connectionsRef.current.blue) {
+        const dist = distToSegment(player.pos, conn.p1, conn.p2);
+        if (dist < 80) {
+          const dx = conn.p2.x - conn.p1.x;
+          const dy = conn.p2.y - conn.p1.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          const nx = -dy / len;
+          const ny = dx / len;
+          ax += nx * configRef.current.moveSpeed * 3;
+          ay += ny * configRef.current.moveSpeed * 3;
+        }
+      }
+    }
+
+    // 3. Place dots occasionally
+    if (scoresRef.current.red > 0 && Math.random() < 0.005) {
+      action = 'dot';
+    }
+
+    // 4. Use burst if adversary is close
+    const distToAdversary = Math.sqrt((player.pos.x - adversary.pos.x)**2 + (player.pos.y - adversary.pos.y)**2);
+    if (distToAdversary < 120 && Math.random() < 0.03) {
+      action = 'burst';
+    }
+
+    // 5. Use dash to reach collectible faster
+    if (nearestCollectible && minDist < 250 && minDist > 100 && Math.random() < 0.01) {
+      action = 'dash';
+    }
+
+    return { ax, ay, action };
+  };
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
@@ -680,100 +816,17 @@ export default function App() {
 
       // Handle dot placement
       if (key === '1' || key === 'i') {
-        const playerId = key === '1' ? 'blue' : 'red';
-        const playerIdx = playerId === 'blue' ? 0 : 1;
-        const player = playersRef.current[playerIdx];
-
-        // Check safe zones
-        const blueSpawn = getSpawnPos('blue', window.innerWidth, window.innerHeight);
-        const redSpawn = getSpawnPos('red', window.innerWidth, window.innerHeight);
-        
-        const distToBlueSafe = Math.sqrt((player.pos.x - blueSpawn.x)**2 + (player.pos.y - blueSpawn.y)**2);
-        const distToRedSafe = Math.sqrt((player.pos.x - redSpawn.x)**2 + (player.pos.y - redSpawn.y)**2);
-
-        const safeRadius = getSafeZoneRadius();
-        if (distToBlueSafe < safeRadius || distToRedSafe < safeRadius) {
-          return; // Cannot place in safe zones
-        }
-
-        setScores(current => {
-          if (current[playerId] > 0) {
-            const newDot = {
-              pos: { ...playersRef.current[playerIdx].pos },
-              radius: 6,
-              id: nextPlacedDotIdRef.current++,
-              playerId,
-              createdAt: performance.now()
-            };
-            
-            // Add new connections for this dot
-            const threshold = configRef.current.joltDistance;
-            const thresholdSq = threshold * threshold;
-            for (const existingDot of placedDotsRef.current) {
-              if (existingDot.playerId !== playerId) continue;
-              const dx = newDot.pos.x - existingDot.pos.x;
-              const dy = newDot.pos.y - existingDot.pos.y;
-              const distSq = dx * dx + dy * dy;
-              if (distSq < thresholdSq) {
-                connectionsRef.current[playerId].push({ p1: newDot.pos, p2: existingDot.pos });
-              }
-            }
-            
-            placedDotsRef.current.push(newDot);
-            return { ...current, [playerId]: current[playerId] - 1 };
-          }
-          return current;
-        });
+        performAction('dot', key === '1' ? 'blue' : 'red');
       }
 
       // Handle burst
       if (key === '2' || key === 'o') {
-        const playerId = key === '2' ? 'blue' : 'red';
-        const playerIdx = playerId === 'blue' ? 0 : 1;
-        const adversaryIdx = playerId === 'blue' ? 1 : 0;
-        const player = playersRef.current[playerIdx];
-        const adversary = playersRef.current[adversaryIdx];
-        const time = performance.now();
-
-        // Check shared power cooldown
-        if (player.lastPowerTime && time - player.lastPowerTime < POWER_COOLDOWN) {
-          return;
-        }
-
-        player.lastPowerTime = time;
-        player.burstEffect = { startTime: time, pos: { ...player.pos } };
-        soundManager.playBurst();
+        performAction('burst', key === '2' ? 'blue' : 'red');
       }
 
       // Handle dash
       if (key === '3' || key === 'p') {
-        const playerId = key === '3' ? 'blue' : 'red';
-        const playerIdx = playerId === 'blue' ? 0 : 1;
-        const player = playersRef.current[playerIdx];
-        const time = performance.now();
-
-        // Check shared power cooldown
-        if (player.lastPowerTime && time - player.lastPowerTime < POWER_COOLDOWN) {
-          return;
-        }
-
-        // Check if moving
-        const speed = Math.sqrt(player.vel.x ** 2 + player.vel.y ** 2);
-        if (speed < 0.1) return;
-
-        // Calculate dash
-        const dirX = player.vel.x / speed;
-        const dirY = player.vel.y / speed;
-        
-        const startPos = { ...player.pos };
-        player.pos.x += dirX * DASH_DISTANCE;
-        player.pos.y += dirY * DASH_DISTANCE;
-        const endPos = { ...player.pos };
-
-        player.lastPowerTime = time;
-        player.dashEffect = { startTime: time, startPos, endPos };
-        
-        soundManager.playDash();
+        performAction('dash', key === '3' ? 'blue' : 'red');
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -830,6 +883,7 @@ export default function App() {
 
     const update = (time: number) => {
       if (gameStateRef.current !== 'playing') {
+        soundManager.stopEngines();
         lastTimeRef.current = time;
         requestAnimationFrame(update);
         return;
@@ -881,11 +935,20 @@ export default function App() {
           if (keys['s']) ay += configRef.current.moveSpeed;
           if (keys['a']) ax -= configRef.current.moveSpeed;
           if (keys['d']) ax += configRef.current.moveSpeed;
-        } else { // Red Player (Arrows)
-          if (keys['arrowup']) ay -= configRef.current.moveSpeed;
-          if (keys['arrowdown']) ay += configRef.current.moveSpeed;
-          if (keys['arrowleft']) ax -= configRef.current.moveSpeed;
-          if (keys['arrowright']) ax += configRef.current.moveSpeed;
+        } else { // Red Player (Arrows or AI)
+          if (configRef.current.aiEnabled) {
+            const aiInput = getAIInput(player, playersRef.current[0], collectiblesRef.current, time);
+            ax = aiInput.ax;
+            ay = aiInput.ay;
+            if (aiInput.action) {
+              performAction(aiInput.action, 'red');
+            }
+          } else {
+            if (keys['arrowup']) ay -= configRef.current.moveSpeed;
+            if (keys['arrowdown']) ay += configRef.current.moveSpeed;
+            if (keys['arrowleft']) ax -= configRef.current.moveSpeed;
+            if (keys['arrowright']) ax += configRef.current.moveSpeed;
+          }
         }
 
         player.vel.x += ax;
@@ -1554,6 +1617,17 @@ export default function App() {
                             ) : (
                               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
                             )}
+                          </button>
+                          <button 
+                            onClick={() => setConfig(prev => ({ ...prev, aiEnabled: !prev.aiEnabled }))}
+                            className={`w-14 h-14 flex items-center justify-center rounded-2xl border transition-all active:scale-90 ${
+                              config.aiEnabled 
+                                ? 'bg-purple-500/20 border-purple-500/40 text-purple-400' 
+                                : 'bg-gray-900/50 border-gray-700 text-gray-500'
+                            }`}
+                            title={config.aiEnabled ? "Disable AI Opponent" : "Enable AI Opponent"}
+                          >
+                            <span className="text-sm font-black tracking-tighter">AI</span>
                           </button>
                         </>
                       )}
