@@ -1781,22 +1781,22 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-col gap-6 w-full max-w-xs">
-                    <div className="flex gap-3 justify-center">
+                    <div className="flex gap-5 justify-center">
                       {audioStarted && (
                         <>
                           <button 
                             onClick={() => setShowConfig(true)}
-                            className="w-14 h-14 flex items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)] hover:scale-110 transition-all active:scale-90"
+                            className="w-12 h-12 flex items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)] hover:scale-110 hover:shadow-[0_0_30px_rgba(0,255,255,0.5)] transition-all active:scale-90"
                             title="Configuration"
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                           </button>
                           <button 
                             onClick={toggleMusic}
-                            className={`w-14 h-14 flex items-center justify-center rounded-2xl border transition-all active:scale-90 ${
+                            className={`w-12 h-12 flex items-center justify-center rounded-2xl border transition-all active:scale-90 hover:scale-110 ${
                               musicEnabled 
-                                ? 'bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)]' 
-                                : 'bg-gray-900/50 border-gray-700 text-gray-500'
+                                ? 'bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)] hover:shadow-[0_0_30px_rgba(0,255,255,0.5)]' 
+                                : 'bg-gray-900/50 border-gray-700 text-gray-500 hover:border-cyan-500/50'
                             }`}
                             title={musicEnabled ? "Disable Music" : "Enable Music"}
                           >
@@ -1808,10 +1808,10 @@ export default function App() {
                           </button>
                           <button 
                             onClick={() => setConfig(prev => ({ ...prev, aiEnabled: !prev.aiEnabled }))}
-                            className={`w-14 h-14 flex items-center justify-center rounded-2xl border transition-all active:scale-90 ${
+                            className={`w-12 h-12 flex items-center justify-center rounded-2xl border transition-all active:scale-90 hover:scale-110 ${
                               config.aiEnabled 
-                                ? 'bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)]' 
-                                : 'bg-gray-900/50 border-gray-700 text-gray-500'
+                                ? 'bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)] hover:shadow-[0_0_30px_rgba(0,255,255,0.5)]' 
+                                : 'bg-gray-900/50 border-gray-700 text-gray-500 hover:border-cyan-500/50'
                             }`}
                             title={config.aiEnabled ? "Disable AI Opponent" : "Enable AI Opponent"}
                           >
@@ -1838,7 +1838,7 @@ export default function App() {
                       >
                         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
                         <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-white/10" />
-                        START MISSION
+                        START JOLTING
                       </button>
                     )}
                     
@@ -1924,7 +1924,7 @@ export default function App() {
           <div className="w-72 p-8 bg-gray-900/80 border border-cyan-500/30 rounded-3xl shadow-[0_0_50px_rgba(0,255,255,0.2)] flex flex-col gap-4">
             <div className="space-y-1 mb-4">
               <h2 className="text-center text-2xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-fuchsia-600">
-                PAUSED
+                UNJOLTED
               </h2>
               <div className="h-px w-full bg-gradient-to-r from-transparent via-cyan-500/30 to-transparent" />
             </div>
@@ -1933,13 +1933,13 @@ export default function App() {
               onClick={() => setGameState('playing')}
               className="w-full bg-cyan-600/20 border border-cyan-500/40 text-cyan-400 py-4 rounded-xl font-bold uppercase tracking-widest hover:bg-cyan-600 hover:text-white transition-all active:scale-95"
             >
-              Resume
+              JOLT
             </button>
             <button 
               onClick={() => resetGame(true)}
               className="w-full bg-fuchsia-600/10 border border-fuchsia-500/20 text-fuchsia-400/70 py-4 rounded-xl font-bold uppercase tracking-widest hover:bg-fuchsia-600 hover:text-white transition-all active:scale-95"
             >
-              Abort Mission
+              FULLY UNJOLT
             </button>
           </div>
         </div>
