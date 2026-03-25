@@ -17,10 +17,12 @@ interface GameObject {
   radius: number;
   color: string;
   isDead?: boolean;
+  deathTime?: number;
   deathPos?: Point;
   killingSegment?: { p1: Point, p2: Point };
   lastRespawnTime?: number;
-  lastDashTime?: number;
+  lastPowerTime?: number;
+  burstEffect?: { startTime: number; pos: Point };
   dashEffect?: { startTime: number; startPos: Point; endPos: Point };
   trail: Point[];
 }
@@ -49,6 +51,7 @@ interface PlacedDot {
 interface GameConfig {
   joltDistance: number;
   moveSpeed: number;
+  killLimit: number;
 }
 
 class SoundManager {
@@ -59,10 +62,14 @@ class SoundManager {
   private synthLoopKick: AudioBufferSourceNode | null = null;
   private synthLoopSnare: AudioBufferSourceNode | null = null;
   private synthLoopBass: AudioBufferSourceNode | null = null;
+  private synthLoopPad: AudioBufferSourceNode | null = null;
+  private synthLoopExtraSnare: AudioBufferSourceNode | null = null;
   private musicGain: GainNode | null = null;
   private kickGain: GainNode | null = null;
   private snareGain: GainNode | null = null;
+  private extraSnareGain: GainNode | null = null;
   private bassGain: GainNode | null = null;
+  private padGain: GainNode | null = null;
   private isInitialized = false;
   private musicEnabled = true;
   private bpm = 140;
@@ -93,11 +100,16 @@ class SoundManager {
 
     this.kickGain = this.ctx.createGain();
     this.snareGain = this.ctx.createGain();
+    this.extraSnareGain = this.ctx.createGain();
     this.bassGain = this.ctx.createGain();
+    this.padGain = this.ctx.createGain();
+    this.padGain.gain.value = 0.3; // Quiet ambient layer
 
     this.kickGain.connect(this.musicGain);
     this.snareGain.connect(this.musicGain);
+    this.extraSnareGain.connect(this.musicGain);
     this.bassGain.connect(this.musicGain);
+    this.padGain.connect(this.musicGain);
 
     this.isInitialized = true;
     this.startSynthLoop();
@@ -117,8 +129,12 @@ class SoundManager {
     }
   }
 
-  updateMusicComponent(component: 'kick' | 'snare' | 'bass', enabled: boolean) {
-    const gainNode = component === 'kick' ? this.kickGain : component === 'snare' ? this.snareGain : this.bassGain;
+  updateMusicComponent(component: 'kick' | 'snare' | 'bass' | 'pad' | 'extraSnare', enabled: boolean) {
+    const gainNode = component === 'kick' ? this.kickGain : 
+                     component === 'snare' ? this.snareGain : 
+                     component === 'bass' ? this.bassGain : 
+                     component === 'extraSnare' ? this.extraSnareGain :
+                     this.padGain;
     if (this.ctx && gainNode) {
       gainNode.gain.setTargetAtTime(enabled ? 1.0 : 0.0, this.ctx.currentTime, 0.1);
     }
@@ -126,11 +142,13 @@ class SoundManager {
 
   setBPM(bpm: number) {
     this.bpm = bpm;
-    if (this.ctx && this.synthLoopKick && this.synthLoopSnare && this.synthLoopBass) {
+    if (this.ctx && this.synthLoopKick && this.synthLoopSnare && this.synthLoopBass && this.synthLoopPad && this.synthLoopExtraSnare) {
       const rate = bpm / 140;
       this.synthLoopKick.playbackRate.setTargetAtTime(rate, this.ctx.currentTime, 0.1);
       this.synthLoopSnare.playbackRate.setTargetAtTime(rate, this.ctx.currentTime, 0.1);
+      this.synthLoopExtraSnare.playbackRate.setTargetAtTime(rate, this.ctx.currentTime, 0.1);
       this.synthLoopBass.playbackRate.setTargetAtTime(rate, this.ctx.currentTime, 0.1);
+      this.synthLoopPad.playbackRate.setTargetAtTime(rate, this.ctx.currentTime, 0.1);
     }
   }
 
@@ -145,11 +163,15 @@ class SoundManager {
     
     const kickBuf = this.ctx.createBuffer(1, loopLen, sampleRate);
     const snareBuf = this.ctx.createBuffer(1, loopLen, sampleRate);
+    const extraSnareBuf = this.ctx.createBuffer(1, loopLen, sampleRate);
     const bassBuf = this.ctx.createBuffer(1, loopLen, sampleRate);
+    const padBuf = this.ctx.createBuffer(1, loopLen, sampleRate);
 
     const kickData = kickBuf.getChannelData(0);
     const snareData = snareBuf.getChannelData(0);
+    const extraSnareData = extraSnareBuf.getChannelData(0);
     const bassData = bassBuf.getChannelData(0);
+    const padData = padBuf.getChannelData(0);
     
     // Simple noise generator for percussion
     const noise = new Float32Array(loopLen);
@@ -157,6 +179,7 @@ class SoundManager {
 
     let thumpPhase = 0;
     let bassPhase = 0;
+    let padPhases = [0, 0, 0]; // Root, Fifth, Octave
     let lastStep = -1;
 
     for (let i = 0; i < loopLen; i++) {
@@ -187,12 +210,17 @@ class SoundManager {
         const snareNoise = noise[i] * 0.1 * Math.exp(-stepPos * 15);
         const snareBody = Math.sin(140 * (i % stepLen) / sampleRate * 2 * Math.PI) * 0.05 * Math.exp(-stepPos * 12);
         snareData[i] = snareNoise + snareBody;
+
+        // Extra snappy snare layer
+        const snapNoise = noise[i] * 0.15 * Math.exp(-stepPos * 25);
+        const snapBody = Math.sin(220 * (i % stepLen) / sampleRate * 2 * Math.PI) * 0.1 * Math.exp(-stepPos * 20);
+        extraSnareData[i] = snapNoise + snapBody;
       }
 
       // --- BASS ---
       const bassPattern = [1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1];
+      const bassFreq = (step % 64 < 32) ? 55 : 48.99; // A1 or G1
       if (bassPattern[step % 16] === 1) {
-        const bassFreq = (step % 64 < 32) ? 55 : 48.99; // A1 or G1
         bassPhase += (bassFreq * 2 * Math.PI) / sampleRate;
         let val = 0;
         for (let h = 1; h < 3; h++) { // Minimal harmonics for pure sub feel
@@ -201,6 +229,16 @@ class SoundManager {
         val = Math.max(-0.8, Math.min(0.8, val * 2.0));
         bassData[i] = val * 0.15 * (1 - stepPos * 0.5);
       }
+
+      // --- AMBIENT PAD ---
+      // Continuous soft chord following the bass root
+      const padFreqs = [bassFreq * 2, bassFreq * 3, bassFreq * 4]; // Octave, Octave+Fifth, Two Octaves
+      let padVal = 0;
+      for (let p = 0; p < padPhases.length; p++) {
+        padPhases[p] += (padFreqs[p] * 2 * Math.PI) / sampleRate;
+        padVal += Math.sin(padPhases[p]);
+      }
+      padData[i] = (padVal / 3) * 0.08;
     }
     
     this.synthLoopKick = this.ctx.createBufferSource();
@@ -213,21 +251,35 @@ class SoundManager {
     this.synthLoopSnare.loop = true;
     this.synthLoopSnare.connect(this.snareGain!);
 
+    this.synthLoopExtraSnare = this.ctx.createBufferSource();
+    this.synthLoopExtraSnare.buffer = extraSnareBuf;
+    this.synthLoopExtraSnare.loop = true;
+    this.synthLoopExtraSnare.connect(this.extraSnareGain!);
+
     this.synthLoopBass = this.ctx.createBufferSource();
     this.synthLoopBass.buffer = bassBuf;
     this.synthLoopBass.loop = true;
     this.synthLoopBass.connect(this.bassGain!);
 
+    this.synthLoopPad = this.ctx.createBufferSource();
+    this.synthLoopPad.buffer = padBuf;
+    this.synthLoopPad.loop = true;
+    this.synthLoopPad.connect(this.padGain!);
+
     const startTime = this.ctx.currentTime + 0.1;
     this.synthLoopKick.start(startTime);
     this.synthLoopSnare.start(startTime);
+    this.synthLoopExtraSnare.start(startTime);
     this.synthLoopBass.start(startTime);
+    this.synthLoopPad.start(startTime);
 
     // Set initial playback rate based on current BPM
     const rate = this.bpm / 140;
     this.synthLoopKick.playbackRate.setValueAtTime(rate, startTime);
     this.synthLoopSnare.playbackRate.setValueAtTime(rate, startTime);
+    this.synthLoopExtraSnare.playbackRate.setValueAtTime(rate, startTime);
     this.synthLoopBass.playbackRate.setValueAtTime(rate, startTime);
+    this.synthLoopPad.playbackRate.setValueAtTime(rate, startTime);
   }
 
   playCoin() {
@@ -237,7 +289,7 @@ class SoundManager {
     osc.type = 'sine';
     osc.frequency.setValueAtTime(880, this.ctx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(1760, this.ctx.currentTime + 0.1);
-    gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
     osc.connect(gain);
     gain.connect(this.masterGain);
@@ -256,7 +308,7 @@ class SoundManager {
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(440, this.ctx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(40, this.ctx.currentTime + 0.5);
-    gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.5);
     osc.connect(gain);
     gain.connect(this.masterGain);
@@ -271,12 +323,52 @@ class SoundManager {
     osc.type = 'square';
     osc.frequency.setValueAtTime(800, this.ctx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(200, this.ctx.currentTime + 0.15);
-    gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+    gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
     gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.15);
     osc.connect(gain);
     gain.connect(this.masterGain);
     osc.start();
     osc.stop(this.ctx.currentTime + 0.15);
+  }
+
+  playBurst() {
+    if (!this.ctx || !this.masterGain) return;
+    
+    // Menacing low-end thump
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(40, this.ctx.currentTime + 0.4);
+    
+    gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.5);
+    
+    // Add some noise for texture
+    const noiseNode = this.ctx.createBufferSource();
+    const noiseBuf = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.5, this.ctx.sampleRate);
+    const noiseData = noiseBuf.getChannelData(0);
+    for (let i = 0; i < noiseData.length; i++) noiseData[i] = Math.random() * 2 - 1;
+    noiseNode.buffer = noiseBuf;
+    
+    const noiseGain = this.ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.3);
+    
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(400, this.ctx.currentTime);
+    
+    osc.connect(gain);
+    noiseNode.connect(noiseGain);
+    noiseGain.connect(filter);
+    gain.connect(this.masterGain);
+    filter.connect(this.masterGain);
+    
+    osc.start();
+    noiseNode.start();
+    osc.stop(this.ctx.currentTime + 0.5);
+    noiseNode.stop(this.ctx.currentTime + 0.5);
   }
 
   updateEngine(playerIdx: number, velocity: number) {
@@ -322,11 +414,43 @@ class SoundManager {
     const targetGain = Math.min(0.04, velocity * 0.008);
     gain.gain.setTargetAtTime(targetGain, this.ctx.currentTime, 0.2);
   }
+
+  playGameOver() {
+    if (!this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    
+    // Deep, dramatic chord
+    const freqs = [55, 82.4, 110, 164.8]; // A1, E2, A2, E3
+    freqs.forEach((f, i) => {
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      
+      osc.type = i % 2 === 0 ? 'sawtooth' : 'triangle';
+      osc.frequency.setValueAtTime(f, now);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.5, now + 2);
+      
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.1, now + 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 3);
+      
+      const filter = this.ctx!.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(2000, now);
+      filter.frequency.exponentialRampToValueAtTime(100, now + 2);
+      
+      osc.connect(gain);
+      gain.connect(filter);
+      filter.connect(this.masterGain!);
+      
+      osc.start(now);
+      osc.stop(now + 3);
+    });
+  }
 }
 
 const soundManager = new SoundManager();
 
-type GameState = 'menu' | 'playing' | 'paused';
+type GameState = 'menu' | 'playing' | 'paused' | 'gameOver';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -344,8 +468,10 @@ export default function App() {
     setMusicEnabled(true);
     // Start with only snare and bass for the menu, thump joins in mission
     soundManager.updateMusicComponent('kick', initialState === 'playing');
+    soundManager.updateMusicComponent('extraSnare', initialState === 'playing');
     soundManager.updateMusicComponent('snare', true);
     soundManager.updateMusicComponent('bass', true);
+    soundManager.updateMusicComponent('pad', true);
     setAudioStarted(true);
   };
 
@@ -367,8 +493,9 @@ export default function App() {
       handleStartAudio('playing');
     } else if (audioStarted) {
       soundManager.resume();
-      // Thump only plays during mission
+      // Thump and extra snare only play during mission
       soundManager.updateMusicComponent('kick', s === 'playing');
+      soundManager.updateMusicComponent('extraSnare', s === 'playing');
     }
     _setGameState(s);
     gameStateRef.current = s;
@@ -376,7 +503,8 @@ export default function App() {
 
   const [config, _setConfig] = useState<GameConfig>({
     joltDistance: 250,
-    moveSpeed: 0.3
+    moveSpeed: 0.3,
+    killLimit: 10
   });
   const configRef = useRef<GameConfig>(config);
   const setConfig = (c: GameConfig | ((prev: GameConfig) => GameConfig)) => {
@@ -389,7 +517,60 @@ export default function App() {
       configRef.current = c;
     }
   };
-  const [scores, setScores] = useState({ blue: 0, red: 0, blueKills: 0, redKills: 0 });
+  const [scores, _setScores] = useState({ blue: 0, red: 0, blueKills: 0, redKills: 0 });
+  const scoresRef = useRef(scores);
+  const setScores = (s: any | ((prev: any) => any)) => {
+    let next;
+    if (typeof s === 'function') {
+      next = s(scoresRef.current);
+    } else {
+      next = s;
+    }
+    _setScores(next);
+    scoresRef.current = next;
+
+    // Check for win condition
+    const limit = configRef.current.killLimit;
+    if (limit > 0 && gameStateRef.current === 'playing') {
+      if (next.blueKills >= limit || next.redKills >= limit) {
+        const winnerColor = next.blueKills >= limit ? 'blue' : 'red';
+        setWinner(winnerColor);
+        soundManager.playGameOver();
+        
+        // Delay the actual game over screen
+        setTimeout(() => {
+          setGameState('gameOver');
+        }, 1000);
+      }
+    }
+  };
+  const resetGame = (goToMenu: boolean = false) => {
+    collectiblesRef.current = [];
+    for (let i = 0; i < 5; i++) spawnCollectible(window.innerWidth, window.innerHeight);
+    playersRef.current.forEach((p, idx) => {
+      p.pos = getSpawnPos(idx === 0 ? 'blue' : 'red', window.innerWidth, window.innerHeight);
+      p.vel = { x: 0, y: 0 };
+      p.isDead = false;
+      p.trail = [];
+      p.deathTime = undefined;
+      p.deathPos = undefined;
+      p.killingSegment = undefined;
+    });
+    placedDotsRef.current = [];
+    connectionsRef.current = { blue: [], red: [] };
+    _setScores({ blue: 0, red: 0, blueKills: 0, redKills: 0 });
+    scoresRef.current = { blue: 0, red: 0, blueKills: 0, redKills: 0 };
+    setWinner(null);
+    if (goToMenu) {
+      setGameState('menu');
+    } else {
+      setGameState('playing');
+      lastHeartbeatRef.current = performance.now();
+    }
+  };
+
+  const [dashCooldowns, setDashCooldowns] = useState({ blue: 1, red: 1 });
+  const [winner, setWinner] = useState<'blue' | 'red' | null>(null);
   
   // Game state refs to avoid re-renders on every frame
   const playersRef = useRef<GameObject[]>([
@@ -432,10 +613,14 @@ export default function App() {
   const MAX_COLLECTIBLES = 10;
   const HEARTBEAT_INTERVAL = 2000;
   const JOLT_DURATION = 300;
-  const SAFE_ZONE_RADIUS = 100;
+  const getSafeZoneRadius = () => configRef.current.joltDistance * 0.55;
   const DASH_COOLDOWN = 5000; // 5 seconds
   const DASH_DISTANCE = 120;
   const DASH_DURATION = 300; // Animation duration
+  const POWER_COOLDOWN = 5000; // Shared cooldown
+  const BURST_DISTANCE = DASH_DISTANCE;
+  const BURST_DURATION = 600; // Longer animation for "impressive" feel
+  const RESPAWN_DELAY = 2000; // 2 seconds
 
   const getSpawnPos = (playerId: 'blue' | 'red', width: number, height: number) => {
     if (playerId === 'blue') return { x: width * 0.1, y: height / 2 };
@@ -506,7 +691,8 @@ export default function App() {
         const distToBlueSafe = Math.sqrt((player.pos.x - blueSpawn.x)**2 + (player.pos.y - blueSpawn.y)**2);
         const distToRedSafe = Math.sqrt((player.pos.x - redSpawn.x)**2 + (player.pos.y - redSpawn.y)**2);
 
-        if (distToBlueSafe < SAFE_ZONE_RADIUS || distToRedSafe < SAFE_ZONE_RADIUS) {
+        const safeRadius = getSafeZoneRadius();
+        if (distToBlueSafe < safeRadius || distToRedSafe < safeRadius) {
           return; // Cannot place in safe zones
         }
 
@@ -540,6 +726,25 @@ export default function App() {
         });
       }
 
+      // Handle burst
+      if (key === '2' || key === 'o') {
+        const playerId = key === '2' ? 'blue' : 'red';
+        const playerIdx = playerId === 'blue' ? 0 : 1;
+        const adversaryIdx = playerId === 'blue' ? 1 : 0;
+        const player = playersRef.current[playerIdx];
+        const adversary = playersRef.current[adversaryIdx];
+        const time = performance.now();
+
+        // Check shared power cooldown
+        if (player.lastPowerTime && time - player.lastPowerTime < POWER_COOLDOWN) {
+          return;
+        }
+
+        player.lastPowerTime = time;
+        player.burstEffect = { startTime: time, pos: { ...player.pos } };
+        soundManager.playBurst();
+      }
+
       // Handle dash
       if (key === '3' || key === 'p') {
         const playerId = key === '3' ? 'blue' : 'red';
@@ -547,8 +752,8 @@ export default function App() {
         const player = playersRef.current[playerIdx];
         const time = performance.now();
 
-        // Check cooldown
-        if (player.lastDashTime && time - player.lastDashTime < DASH_COOLDOWN) {
+        // Check shared power cooldown
+        if (player.lastPowerTime && time - player.lastPowerTime < POWER_COOLDOWN) {
           return;
         }
 
@@ -565,7 +770,7 @@ export default function App() {
         player.pos.y += dirY * DASH_DISTANCE;
         const endPos = { ...player.pos };
 
-        player.lastDashTime = time;
+        player.lastPowerTime = time;
         player.dashEffect = { startTime: time, startPos, endPos };
         
         soundManager.playDash();
@@ -645,18 +850,18 @@ export default function App() {
       }
       const joltProgress = time - lastHeartbeatRef.current;
       const isJolting = joltProgress < JOLT_DURATION;
+      const isDeadly = joltProgress > JOLT_DURATION * 0.33 && joltProgress < JOLT_DURATION * 0.66;
 
-      // Respawn dead players after jolt ends
-      if (!isJolting) {
-        playersRef.current.forEach((player, idx) => {
-          if (player.isDead) {
-            player.isDead = false;
-            player.pos = getSpawnPos(idx === 0 ? 'blue' : 'red', canvas.width, canvas.height);
-            player.vel = { x: 0, y: 0 };
-            player.lastRespawnTime = time;
-          }
-        });
-      }
+      // Respawn dead players after delay
+      playersRef.current.forEach((player, idx) => {
+        if (player.isDead && player.deathTime && time - player.deathTime > RESPAWN_DELAY) {
+          player.isDead = false;
+          player.pos = getSpawnPos(idx === 0 ? 'blue' : 'red', canvas.width, canvas.height);
+          player.vel = { x: 0, y: 0 };
+          player.lastRespawnTime = time;
+          player.deathTime = undefined;
+        }
+      });
 
       // Update both players
       playersRef.current.forEach((player, idx) => {
@@ -755,6 +960,12 @@ export default function App() {
         soundManager.playCoin();
       }
 
+      // Update power cooldowns for UI
+      setDashCooldowns({
+        blue: Math.max(0, Math.min(1, (time - (playersRef.current[0].lastPowerTime || 0)) / POWER_COOLDOWN)),
+        red: Math.max(0, Math.min(1, (time - (playersRef.current[1].lastPowerTime || 0)) / POWER_COOLDOWN))
+      });
+
       // Spawn new collectibles
       if (Math.random() < 0.02) {
         spawnCollectible(canvas.width, canvas.height);
@@ -809,6 +1020,42 @@ export default function App() {
         return age < 500; // 500ms duration
       });
 
+      // Update burst collisions
+      playersRef.current.forEach((player, idx) => {
+        if (player.burstEffect && time - player.burstEffect.startTime < BURST_DURATION) {
+          const progress = (time - player.burstEffect.startTime) / BURST_DURATION;
+          // Use the same radius calculation as in the drawing logic
+          const currentRadius = progress * BURST_DISTANCE * 1.2;
+          const adversaryIdx = idx === 0 ? 1 : 0;
+          const adversary = playersRef.current[adversaryIdx];
+          
+          if (!adversary.isDead) {
+            const adversarySpawn = getSpawnPos(adversaryIdx === 0 ? 'blue' : 'red', canvas.width, canvas.height);
+            const inSafeZone = Math.sqrt((adversary.pos.x - adversarySpawn.x) ** 2 + (adversary.pos.y - adversarySpawn.y) ** 2) < getSafeZoneRadius();
+
+            const dx = adversary.pos.x - player.burstEffect.pos.x;
+            const dy = adversary.pos.y - player.burstEffect.pos.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            
+            // Ring thickness for collision
+            const ringThickness = 15;
+            if (!inSafeZone && Math.abs(dist - currentRadius) < ringThickness + adversary.radius) {
+              const playerId = idx === 0 ? 'blue' : 'red';
+              setScores((prev: any) => ({
+                ...prev,
+                [playerId === 'blue' ? 'red' : 'blue']: 0,
+                [playerId === 'blue' ? 'blueKills' : 'redKills']: prev[playerId === 'blue' ? 'blueKills' : 'redKills'] + 1
+              }));
+              adversary.isDead = true;
+              adversary.deathTime = time;
+              adversary.deathPos = { ...adversary.pos };
+              adversary.killingSegment = { p1: player.burstEffect.pos, p2: adversary.pos }; 
+              soundManager.playKill();
+            }
+          }
+        }
+      });
+
       // Draw
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -833,6 +1080,7 @@ export default function App() {
       // Draw Safe Zones
       const blueSpawn = getSpawnPos('blue', canvas.width, canvas.height);
       const redSpawn = getSpawnPos('red', canvas.width, canvas.height);
+      const safeRadius = getSafeZoneRadius();
       
       ctx.setLineDash([5, 5]);
       ctx.lineWidth = 1;
@@ -840,7 +1088,7 @@ export default function App() {
       // Blue Safe Zone
       ctx.strokeStyle = 'rgba(59, 130, 246, 0.4)';
       ctx.beginPath();
-      ctx.arc(blueSpawn.x, blueSpawn.y, SAFE_ZONE_RADIUS, 0, Math.PI * 2);
+      ctx.arc(blueSpawn.x, blueSpawn.y, safeRadius, 0, Math.PI * 2);
       ctx.stroke();
       ctx.fillStyle = 'rgba(59, 130, 246, 0.1)';
       ctx.fill();
@@ -848,7 +1096,7 @@ export default function App() {
       // Red Safe Zone
       ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)';
       ctx.beginPath();
-      ctx.arc(redSpawn.x, redSpawn.y, SAFE_ZONE_RADIUS, 0, Math.PI * 2);
+      ctx.arc(redSpawn.x, redSpawn.y, safeRadius, 0, Math.PI * 2);
       ctx.stroke();
       ctx.fillStyle = 'rgba(239, 68, 68, 0.1)';
       ctx.fill();
@@ -862,9 +1110,9 @@ export default function App() {
         
         // Blue jolts
         if (connectionsRef.current.blue.length > 0) {
-          ctx.strokeStyle = `rgba(59, 130, 246, ${opacity * 0.8})`;
-          ctx.lineWidth = 4;
-          ctx.shadowBlur = 15 * opacity;
+          ctx.strokeStyle = `rgba(59, 130, 246, ${opacity * (isDeadly ? 1 : 0.4)})`;
+          ctx.lineWidth = isDeadly ? 6 : 2;
+          ctx.shadowBlur = (isDeadly ? 20 : 5) * opacity;
           ctx.shadowColor = '#3b82f6';
           ctx.beginPath();
           for (const conn of connectionsRef.current.blue) {
@@ -873,9 +1121,13 @@ export default function App() {
             
             // Check if Red player (idx 1) is hit by Blue jolt
             const redPlayer = playersRef.current[1];
-            if (!redPlayer.isDead && distToSegment(redPlayer.pos, conn.p1, conn.p2) < KILL_THRESHOLD + redPlayer.radius) {
+            const redSpawn = getSpawnPos('red', canvas.width, canvas.height);
+            const inSafeZone = Math.sqrt((redPlayer.pos.x - redSpawn.x) ** 2 + (redPlayer.pos.y - redSpawn.y) ** 2) < getSafeZoneRadius();
+            
+            if (isDeadly && !redPlayer.isDead && !inSafeZone && distToSegment(redPlayer.pos, conn.p1, conn.p2) < KILL_THRESHOLD + redPlayer.radius) {
               setScores(prev => ({ ...prev, red: 0, blueKills: prev.blueKills + 1 }));
               redPlayer.isDead = true;
+              redPlayer.deathTime = time;
               redPlayer.deathPos = { ...redPlayer.pos };
               redPlayer.killingSegment = conn;
               soundManager.playKill();
@@ -886,9 +1138,9 @@ export default function App() {
 
         // Red jolts
         if (connectionsRef.current.red.length > 0) {
-          ctx.strokeStyle = `rgba(239, 68, 68, ${opacity * 0.8})`;
-          ctx.lineWidth = 4;
-          ctx.shadowBlur = 15 * opacity;
+          ctx.strokeStyle = `rgba(239, 68, 68, ${opacity * (isDeadly ? 1 : 0.4)})`;
+          ctx.lineWidth = isDeadly ? 6 : 2;
+          ctx.shadowBlur = (isDeadly ? 20 : 5) * opacity;
           ctx.shadowColor = '#ef4444';
           ctx.beginPath();
           for (const conn of connectionsRef.current.red) {
@@ -897,9 +1149,13 @@ export default function App() {
 
             // Check if Blue player (idx 0) is hit by Red jolt
             const bluePlayer = playersRef.current[0];
-            if (!bluePlayer.isDead && distToSegment(bluePlayer.pos, conn.p1, conn.p2) < KILL_THRESHOLD + bluePlayer.radius) {
+            const blueSpawn = getSpawnPos('blue', canvas.width, canvas.height);
+            const inSafeZone = Math.sqrt((bluePlayer.pos.x - blueSpawn.x) ** 2 + (bluePlayer.pos.y - blueSpawn.y) ** 2) < getSafeZoneRadius();
+
+            if (isDeadly && !bluePlayer.isDead && !inSafeZone && distToSegment(bluePlayer.pos, conn.p1, conn.p2) < KILL_THRESHOLD + bluePlayer.radius) {
               setScores(prev => ({ ...prev, blue: 0, redKills: prev.redKills + 1 }));
               bluePlayer.isDead = true;
+              bluePlayer.deathTime = time;
               bluePlayer.deathPos = { ...bluePlayer.pos };
               bluePlayer.killingSegment = conn;
               soundManager.playKill();
@@ -1087,29 +1343,43 @@ export default function App() {
             ctx.restore();
           }
 
-          // Draw dash cooldown bar
-          const dashTime = player.lastDashTime || 0;
-          const cooldownProgress = Math.min(1, (time - dashTime) / DASH_COOLDOWN);
-          
-          if (cooldownProgress < 1) {
-            const barWidth = 30;
-            const barHeight = 4;
-            const bx = player.pos.x - barWidth / 2;
-            const by = player.pos.y + player.radius + 10;
+          // Draw burst effect
+          if (player.burstEffect && time - player.burstEffect.startTime < BURST_DURATION) {
+            const progress = (time - player.burstEffect.startTime) / BURST_DURATION;
+            const opacity = 1 - progress;
             
-            ctx.fillStyle = 'rgba(0,0,0,0.5)';
-            ctx.fillRect(bx, by, barWidth, barHeight);
+            ctx.save();
             
-            ctx.fillStyle = player.color;
-            ctx.fillRect(bx, by, barWidth * cooldownProgress, barHeight);
-            
-            // Glow when ready
-            if (cooldownProgress > 0.99) {
-              ctx.shadowBlur = 10;
+            // Multiple rings for a "shockwave" feel
+            for (let r = 0; r < 3; r++) {
+              const ringProgress = Math.max(0, progress - r * 0.15);
+              if (ringProgress <= 0) continue;
+              
+              const radius = ringProgress * BURST_DISTANCE * 1.2;
+              const ringOpacity = (1 - ringProgress) * opacity;
+              
+              ctx.strokeStyle = player.color;
+              ctx.lineWidth = 6 * (1 - ringProgress);
+              ctx.globalAlpha = ringOpacity;
+              ctx.beginPath();
+              ctx.arc(player.burstEffect.pos.x, player.burstEffect.pos.y, radius, 0, Math.PI * 2);
+              ctx.stroke();
+              
+              // Glow
+              ctx.shadowBlur = 30 * ringOpacity;
               ctx.shadowColor = player.color;
-              ctx.strokeStyle = 'white';
-              ctx.strokeRect(bx, by, barWidth, barHeight);
+              ctx.stroke();
             }
+            
+            // Central distortion flash
+            const flashRadius = (1 - progress) * player.radius * 4;
+            ctx.fillStyle = 'white';
+            ctx.globalAlpha = opacity * 0.3;
+            ctx.beginPath();
+            ctx.arc(player.burstEffect.pos.x, player.burstEffect.pos.y, flashRadius, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.restore();
           }
 
           ctx.fillStyle = player.color;
@@ -1139,22 +1409,6 @@ export default function App() {
   }, []);
 
 
-
-  const resetGame = () => {
-    setScores({ blue: 0, red: 0, blueKills: 0, redKills: 0 });
-    collectiblesRef.current = [];
-    placedDotsRef.current = [];
-    connectionsRef.current = { blue: [], red: [] };
-    playersRef.current.forEach((p, idx) => {
-      p.pos = getSpawnPos(idx === 0 ? 'blue' : 'red', window.innerWidth, window.innerHeight);
-      p.vel = { x: 0, y: 0 };
-      p.isDead = false;
-      p.trail = [];
-      p.lastDashTime = 0;
-      p.dashEffect = undefined;
-    });
-    setGameState('menu');
-  };
 
   return (
     <div className="relative w-full h-screen bg-gray-50 overflow-hidden font-sans">
@@ -1316,16 +1570,7 @@ export default function App() {
                     ) : (
                       <button 
                         onClick={() => {
-                          collectiblesRef.current = [];
-                          for (let i = 0; i < 5; i++) spawnCollectible(window.innerWidth, window.innerHeight);
-                          playersRef.current.forEach((p, idx) => {
-                            p.pos = getSpawnPos(idx === 0 ? 'blue' : 'red', window.innerWidth, window.innerHeight);
-                            p.vel = { x: 0, y: 0 };
-                            p.isDead = false;
-                            p.trail = [];
-                          });
-                          setGameState('playing');
-                          lastHeartbeatRef.current = performance.now();
+                          resetGame(false);
                         }}
                         className="group relative px-8 py-6 bg-gradient-to-r from-blue-600 to-purple-600 text-white font-black uppercase tracking-widest rounded-3xl transition-all shadow-[0_0_40px_rgba(59,130,246,0.5)] hover:shadow-[0_0_60px_rgba(59,130,246,0.7)] hover:scale-105 active:scale-95 overflow-hidden"
                       >
@@ -1386,6 +1631,19 @@ export default function App() {
                     className="w-full accent-blue-500 bg-gray-800 h-1.5 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
+
+                <div className="space-y-3">
+                  <div className="flex justify-between text-[10px] font-mono text-blue-400 uppercase tracking-widest">
+                    <span>Kill Limit</span>
+                    <span className="text-white">{config.killLimit === 0 ? 'Unlimited' : `${config.killLimit} Kills`}</span>
+                  </div>
+                  <input 
+                    type="range" min="0" max="20" step="1"
+                    value={config.killLimit}
+                    onChange={(e) => setConfig(prev => ({ ...prev, killLimit: parseInt(e.target.value) }))}
+                    className="w-full accent-blue-500 bg-gray-800 h-1.5 rounded-full appearance-none cursor-pointer"
+                  />
+                </div>
               </div>
 
               <button 
@@ -1416,7 +1674,7 @@ export default function App() {
               Resume
             </button>
             <button 
-              onClick={resetGame}
+              onClick={() => resetGame(true)}
               className="w-full bg-red-600/10 border border-red-500/20 text-red-400/70 py-4 rounded-xl font-bold uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all active:scale-95"
             >
               Abort Mission
@@ -1425,9 +1683,92 @@ export default function App() {
         </div>
       )}
 
+      {gameState === 'gameOver' && (
+        <div className="absolute inset-0 bg-black/80 backdrop-blur-xl flex items-center justify-center z-[100] overflow-hidden">
+          <AnimatePresence mode="wait">
+            <motion.div 
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="w-full max-w-2xl p-12 bg-gray-900/50 border-y border-blue-500/20 flex flex-col items-center gap-12 relative"
+            >
+              {/* Decorative Background Elements */}
+              <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-20">
+                <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-500/20 via-transparent to-transparent" />
+              </div>
+
+              <div className="space-y-4 text-center relative">
+                <motion.div
+                  initial={{ opacity: 0, y: -20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-xs font-mono tracking-[1em] text-blue-400 uppercase opacity-50"
+                >
+                  Simulation Terminated
+                </motion.div>
+                
+                <motion.h2 
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ delay: 0.4, type: 'spring' }}
+                  className={`text-7xl md:text-8xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-b ${
+                    winner === 'blue' ? 'from-blue-400 to-blue-600' : 'from-red-400 to-red-600'
+                  } drop-shadow-[0_0_30px_rgba(59,130,246,0.5)]`}
+                >
+                  {winner === 'blue' ? 'BLUE' : 'RED'} VICTOR
+                </motion.h2>
+
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.6 }}
+                  className="flex justify-center gap-8 mt-8"
+                >
+                  <div className="text-center">
+                    <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-1">Blue Kills</div>
+                    <div className="text-3xl font-black text-blue-400">{scores.blueKills}</div>
+                  </div>
+                  <div className="w-px h-12 bg-gray-800" />
+                  <div className="text-center">
+                    <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-1">Red Kills</div>
+                    <div className="text-3xl font-black text-red-400">{scores.redKills}</div>
+                  </div>
+                </motion.div>
+              </div>
+
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.8 }}
+                className="flex flex-col sm:flex-row gap-4 w-full max-w-md"
+              >
+                <button 
+                  onClick={() => resetGame(false)}
+                  className="flex-1 group relative px-8 py-5 bg-blue-600 text-white font-black uppercase tracking-widest rounded-2xl transition-all shadow-[0_0_30px_rgba(59,130,246,0.3)] hover:shadow-[0_0_50px_rgba(59,130,246,0.5)] hover:scale-105 active:scale-95 overflow-hidden"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
+                  Restart
+                </button>
+                <button 
+                  onClick={() => resetGame(true)}
+                  className="flex-1 px-8 py-5 bg-gray-800 border border-gray-700 text-gray-400 font-black uppercase tracking-widest rounded-2xl hover:bg-gray-700 hover:text-white transition-all active:scale-95"
+                >
+                  Quit
+                </button>
+              </motion.div>
+
+              <div className="text-[10px] font-mono text-gray-700 uppercase tracking-[0.5em] mt-4">
+                Neural Link Severed
+              </div>
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      )}
+
       {gameState !== 'menu' && (
         <>
-          <div className="absolute top-8 left-8 pointer-events-none">
+          <div className="absolute top-8 left-8 pointer-events-none flex flex-col gap-2">
             <div className="bg-black/60 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(59,130,246,0.2)] flex items-center gap-3">
               <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400">AMMO</div>
               <div className="text-xl font-black text-blue-500 tabular-nums">{scores.blue}</div>
@@ -1435,15 +1776,39 @@ export default function App() {
               <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400">KILLS</div>
               <div className="text-xl font-black text-blue-500 tabular-nums">{scores.blueKills}</div>
             </div>
+            <div className="bg-black/60 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(59,130,246,0.2)] flex items-center gap-3">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400">POWER:</div>
+              <div className="w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
+                <div 
+                  className="h-full"
+                  style={{ 
+                    width: `${dashCooldowns.blue * 100}%`,
+                    backgroundColor: dashCooldowns.blue >= 1 ? '#3b82f6' : '#4b5563'
+                  }}
+                />
+              </div>
+            </div>
           </div>
 
-          <div className="absolute top-8 right-8 pointer-events-none">
+          <div className="absolute top-8 right-8 pointer-events-none flex flex-col gap-2 items-end">
             <div className="bg-black/60 backdrop-blur-md border border-red-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.2)] flex items-center gap-3">
               <div className="text-[10px] font-bold uppercase tracking-widest text-red-400">AMMO</div>
               <div className="text-xl font-black text-red-500 tabular-nums">{scores.red}</div>
               <div className="w-px h-4 bg-red-500/30" />
               <div className="text-[10px] font-bold uppercase tracking-widest text-red-400">KILLS</div>
               <div className="text-xl font-black text-red-500 tabular-nums">{scores.redKills}</div>
+            </div>
+            <div className="bg-black/60 backdrop-blur-md border border-red-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.2)] flex items-center gap-3">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-red-400">POWER:</div>
+              <div className="w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
+                <div 
+                  className="h-full"
+                  style={{ 
+                    width: `${dashCooldowns.red * 100}%`,
+                    backgroundColor: dashCooldowns.red >= 1 ? '#ef4444' : '#4b5563'
+                  }}
+                />
+              </div>
             </div>
           </div>
         </>
