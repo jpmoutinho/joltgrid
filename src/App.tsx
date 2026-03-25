@@ -513,9 +513,9 @@ export default function App() {
 
   const [config, _setConfig] = useState<GameConfig>({
     joltDistance: 250,
-    moveSpeed: 0.3,
+    moveSpeed: 0.4,
     killLimit: 10,
-    aiEnabled: false
+    aiEnabled: true
   });
   const configRef = useRef<GameConfig>(config);
   const setConfig = (c: GameConfig | ((prev: GameConfig) => GameConfig)) => {
@@ -530,6 +530,7 @@ export default function App() {
   };
   const [scores, _setScores] = useState({ blue: 0, red: 0, blueKills: 0, redKills: 0 });
   const scoresRef = useRef(scores);
+  const screenShakeRef = useRef<number>(0);
   const setScores = (s: any | ((prev: any) => any)) => {
     let next;
     if (typeof s === 'function') {
@@ -589,7 +590,7 @@ export default function App() {
       pos: { x: 300, y: 300 },
       vel: { x: 0, y: 0 },
       radius: 12,
-      color: '#3b82f6', // blue-500
+      color: '#00ffff', // cyan-400 (Teal)
       trail: [],
       isDead: false,
       lastDashTime: 0
@@ -598,7 +599,7 @@ export default function App() {
       pos: { x: 500, y: 300 },
       vel: { x: 0, y: 0 },
       radius: 12,
-      color: '#ef4444', // red-500
+      color: '#ff00ff', // fuchsia-500 (Pink)
       trail: [],
       isDead: false,
       lastDashTime: 0
@@ -620,7 +621,7 @@ export default function App() {
 
   // Constants
   const ACCELERATION = 0.3; // Slower motion
-  const FRICTION = 0.95;
+  const FRICTION = 0.92;
   const MAX_COLLECTIBLES = 10;
   const HEARTBEAT_INTERVAL = 2000;
   const JOLT_DURATION = 300;
@@ -757,9 +758,31 @@ export default function App() {
         ax = (dx / dist) * configRef.current.moveSpeed;
         ay = (dy / dist) * configRef.current.moveSpeed;
       }
+    } else {
+      // Pursue adversary if no collectibles
+      const dx = adversary.pos.x - player.pos.x;
+      const dy = adversary.pos.y - player.pos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        ax = (dx / dist) * configRef.current.moveSpeed;
+        ay = (dy / dist) * configRef.current.moveSpeed;
+      }
     }
 
-    // 2. Avoid adversary's jolts (if deadly)
+    // 2. Aggression: If adversary is very close, prioritize pursuing them even if there are collectibles
+    const distToAdversary = Math.sqrt((player.pos.x - adversary.pos.x)**2 + (player.pos.y - adversary.pos.y)**2);
+    if (distToAdversary < 200 && !adversary.isDead) {
+      const dx = adversary.pos.x - player.pos.x;
+      const dy = adversary.pos.y - player.pos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        // Blend movement towards adversary
+        ax = ax * 0.3 + (dx / dist) * configRef.current.moveSpeed * 0.7;
+        ay = ay * 0.3 + (dy / dist) * configRef.current.moveSpeed * 0.7;
+      }
+    }
+
+    // 3. Avoid adversary's jolts (if deadly)
     const joltProgress = time - lastHeartbeatRef.current;
     const isDeadly = joltProgress > JOLT_DURATION * 0.33 && joltProgress < JOLT_DURATION * 0.66;
     
@@ -784,14 +807,17 @@ export default function App() {
     }
 
     // 4. Use burst if adversary is close
-    const distToAdversary = Math.sqrt((player.pos.x - adversary.pos.x)**2 + (player.pos.y - adversary.pos.y)**2);
-    if (distToAdversary < 120 && Math.random() < 0.03) {
+    if (distToAdversary < 150 && !adversary.isDead && Math.random() < 0.05) {
       action = 'burst';
     }
 
-    // 5. Use dash to reach collectible faster
-    if (nearestCollectible && minDist < 250 && minDist > 100 && Math.random() < 0.01) {
-      action = 'dash';
+    // 5. Use dash to close gap with adversary or reach collectible
+    if (!action) {
+      if (distToAdversary < 300 && distToAdversary > 150 && !adversary.isDead && Math.random() < 0.02) {
+        action = 'dash';
+      } else if (nearestCollectible && minDist < 250 && minDist > 100 && Math.random() < 0.01) {
+        action = 'dash';
+      }
     }
 
     return { ax, ay, action };
@@ -951,8 +977,19 @@ export default function App() {
           }
         }
 
-        player.vel.x += ax;
-        player.vel.y += ay;
+        // Apply acceleration with a "turn-around" boost for snappier controls
+        if (ax !== 0 && Math.sign(ax) !== Math.sign(player.vel.x) && Math.abs(player.vel.x) > 0.1) {
+          player.vel.x += ax * 2.5;
+        } else {
+          player.vel.x += ax;
+        }
+
+        if (ay !== 0 && Math.sign(ay) !== Math.sign(player.vel.y) && Math.abs(player.vel.y) > 0.1) {
+          player.vel.y += ay * 2.5;
+        } else {
+          player.vel.y += ay;
+        }
+
         player.vel.x *= FRICTION;
         player.vel.y *= FRICTION;
         player.pos.x += player.vel.x;
@@ -1114,122 +1151,167 @@ export default function App() {
               adversary.deathPos = { ...adversary.pos };
               adversary.killingSegment = { p1: player.burstEffect.pos, p2: adversary.pos }; 
               soundManager.playKill();
+              screenShakeRef.current = 15;
             }
           }
         }
       });
 
       // Draw
+      ctx.save();
+      if (screenShakeRef.current > 0) {
+        const shake = screenShakeRef.current;
+        ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+        screenShakeRef.current *= 0.9;
+        if (screenShakeRef.current < 0.1) screenShakeRef.current = 0;
+      }
+
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       // Draw background grid (Neon Synth Aesthetic)
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.15)';
+      ctx.strokeStyle = 'rgba(59, 130, 246, 0.1)';
       ctx.lineWidth = 1;
-      const gridSize = 50;
-      for (let x = 0; x < canvas.width; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-      }
+      const gridSize = 60;
+      
+      // Horizontal lines with perspective-like fade
       for (let y = 0; y < canvas.height; y += gridSize) {
+        const opacity = 0.05 + (y / canvas.height) * 0.15;
+        ctx.strokeStyle = `rgba(255, 0, 255, ${opacity})`; // Neon Pink/Magenta
         ctx.beginPath();
         ctx.moveTo(0, y);
         ctx.lineTo(canvas.width, y);
         ctx.stroke();
       }
+      
+      // Vertical lines
+      for (let x = 0; x < canvas.width; x += gridSize) {
+        const opacity = 0.05 + (Math.abs(x - canvas.width/2) / (canvas.width/2)) * 0.1;
+        ctx.strokeStyle = `rgba(0, 255, 255, ${opacity})`; // Neon Cyan
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
 
-      // Draw Safe Zones
+      // Scanlines effect
+      ctx.fillStyle = 'rgba(18, 18, 18, 0.1)';
+      for (let y = 0; y < canvas.height; y += 4) {
+        ctx.fillRect(0, y, canvas.width, 1);
+      }
+
+      // Draw Safe Zones (Neon Outlines)
       const blueSpawn = getSpawnPos('blue', canvas.width, canvas.height);
       const redSpawn = getSpawnPos('red', canvas.width, canvas.height);
       const safeRadius = getSafeZoneRadius();
       
-      ctx.setLineDash([5, 5]);
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 2;
       
-      // Blue Safe Zone
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.4)';
+      // Blue Safe Zone (Teal)
+      ctx.strokeStyle = '#00ffff';
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = '#00ffff';
       ctx.beginPath();
       ctx.arc(blueSpawn.x, blueSpawn.y, safeRadius, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = 'rgba(59, 130, 246, 0.1)';
+      ctx.fillStyle = 'rgba(0, 255, 255, 0.05)';
       ctx.fill();
 
-      // Red Safe Zone
-      ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)';
+      // Red Safe Zone (Pink)
+      ctx.strokeStyle = '#ff00ff';
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = '#ff00ff';
       ctx.beginPath();
       ctx.arc(redSpawn.x, redSpawn.y, safeRadius, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.1)';
+      ctx.fillStyle = 'rgba(255, 0, 255, 0.05)';
       ctx.fill();
       
-      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
 
-      // Draw electric jolts and check for kills
+      // Draw electric jolts (Lightning Style)
       if (isJolting) {
         const opacity = 1 - (joltProgress / JOLT_DURATION);
-        const KILL_THRESHOLD = 8; // Distance from line to be killed
+        const KILL_THRESHOLD = 8;
         
-        // Blue jolts
-        if (connectionsRef.current.blue.length > 0) {
-          ctx.strokeStyle = `rgba(59, 130, 246, ${opacity * (isDeadly ? 1 : 0.4)})`;
-          ctx.lineWidth = isDeadly ? 6 : 2;
-          ctx.shadowBlur = (isDeadly ? 20 : 5) * opacity;
-          ctx.shadowColor = '#3b82f6';
+        const drawLightning = (p1: Point, p2: Point, color: string, isDeadly: boolean) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = isDeadly ? 4 : 1.5;
+          ctx.shadowBlur = (isDeadly ? 25 : 10) * opacity;
+          ctx.shadowColor = color;
+          ctx.globalAlpha = opacity;
+          
           ctx.beginPath();
-          for (const conn of connectionsRef.current.blue) {
-            ctx.moveTo(conn.p1.x, conn.p1.y);
-            ctx.lineTo(conn.p2.x, conn.p2.y);
-            
-            // Check if Red player (idx 1) is hit by Blue jolt
-            const redPlayer = playersRef.current[1];
-            const redSpawn = getSpawnPos('red', canvas.width, canvas.height);
-            const inSafeZone = Math.sqrt((redPlayer.pos.x - redSpawn.x) ** 2 + (redPlayer.pos.y - redSpawn.y) ** 2) < getSafeZoneRadius();
-            
-            if (isDeadly && !redPlayer.isDead && !inSafeZone && distToSegment(redPlayer.pos, conn.p1, conn.p2) < KILL_THRESHOLD + redPlayer.radius) {
-              setScores(prev => ({ ...prev, red: 0, blueKills: prev.blueKills + 1 }));
-              redPlayer.isDead = true;
-              redPlayer.deathTime = time;
-              redPlayer.deathPos = { ...redPlayer.pos };
-              redPlayer.killingSegment = conn;
-              soundManager.playKill();
-            }
+          ctx.moveTo(p1.x, p1.y);
+          
+          // Add some "jaggedness" to the lightning
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const segments = Math.max(2, Math.floor(dist / 30));
+          
+          for (let i = 1; i < segments; i++) {
+            const t = i / segments;
+            const px = p1.x + dx * t + (Math.random() - 0.5) * 15;
+            const py = p1.y + dy * t + (Math.random() - 0.5) * 15;
+            ctx.lineTo(px, py);
           }
+          
+          ctx.lineTo(p2.x, p2.y);
           ctx.stroke();
+          
+          // Inner core white line for extra "electric" look
+          if (isDeadly) {
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            ctx.shadowBlur = 0;
+            ctx.stroke();
+          }
+          
+          ctx.globalAlpha = 1;
+        };
+        
+        // Blue jolts (Teal)
+        for (const conn of connectionsRef.current.blue) {
+          drawLightning(conn.p1, conn.p2, '#00ffff', isDeadly);
+          
+          const redPlayer = playersRef.current[1];
+          const redSpawn = getSpawnPos('red', canvas.width, canvas.height);
+          const inSafeZone = Math.sqrt((redPlayer.pos.x - redSpawn.x) ** 2 + (redPlayer.pos.y - redSpawn.y) ** 2) < getSafeZoneRadius();
+          
+          if (isDeadly && !redPlayer.isDead && !inSafeZone && distToSegment(redPlayer.pos, conn.p1, conn.p2) < KILL_THRESHOLD + redPlayer.radius) {
+            setScores(prev => ({ ...prev, red: 0, blueKills: prev.blueKills + 1 }));
+            redPlayer.isDead = true;
+            redPlayer.deathTime = time;
+            redPlayer.deathPos = { ...redPlayer.pos };
+            redPlayer.killingSegment = conn;
+            soundManager.playKill();
+            screenShakeRef.current = 15;
+          }
         }
 
-        // Red jolts
-        if (connectionsRef.current.red.length > 0) {
-          ctx.strokeStyle = `rgba(239, 68, 68, ${opacity * (isDeadly ? 1 : 0.4)})`;
-          ctx.lineWidth = isDeadly ? 6 : 2;
-          ctx.shadowBlur = (isDeadly ? 20 : 5) * opacity;
-          ctx.shadowColor = '#ef4444';
-          ctx.beginPath();
-          for (const conn of connectionsRef.current.red) {
-            ctx.moveTo(conn.p1.x, conn.p1.y);
-            ctx.lineTo(conn.p2.x, conn.p2.y);
+        // Red jolts (Pink)
+        for (const conn of connectionsRef.current.red) {
+          drawLightning(conn.p1, conn.p2, '#ff00ff', isDeadly);
 
-            // Check if Blue player (idx 0) is hit by Red jolt
-            const bluePlayer = playersRef.current[0];
-            const blueSpawn = getSpawnPos('blue', canvas.width, canvas.height);
-            const inSafeZone = Math.sqrt((bluePlayer.pos.x - blueSpawn.x) ** 2 + (bluePlayer.pos.y - blueSpawn.y) ** 2) < getSafeZoneRadius();
+          const bluePlayer = playersRef.current[0];
+          const blueSpawn = getSpawnPos('blue', canvas.width, canvas.height);
+          const inSafeZone = Math.sqrt((bluePlayer.pos.x - blueSpawn.x) ** 2 + (bluePlayer.pos.y - blueSpawn.y) ** 2) < getSafeZoneRadius();
 
-            if (isDeadly && !bluePlayer.isDead && !inSafeZone && distToSegment(bluePlayer.pos, conn.p1, conn.p2) < KILL_THRESHOLD + bluePlayer.radius) {
-              setScores(prev => ({ ...prev, blue: 0, redKills: prev.redKills + 1 }));
-              bluePlayer.isDead = true;
-              bluePlayer.deathTime = time;
-              bluePlayer.deathPos = { ...bluePlayer.pos };
-              bluePlayer.killingSegment = conn;
-              soundManager.playKill();
-            }
+          if (isDeadly && !bluePlayer.isDead && !inSafeZone && distToSegment(bluePlayer.pos, conn.p1, conn.p2) < KILL_THRESHOLD + bluePlayer.radius) {
+            setScores(prev => ({ ...prev, blue: 0, redKills: prev.redKills + 1 }));
+            bluePlayer.isDead = true;
+            bluePlayer.deathTime = time;
+            bluePlayer.deathPos = { ...bluePlayer.pos };
+            bluePlayer.killingSegment = conn;
+            soundManager.playKill();
+            screenShakeRef.current = 15;
           }
-          ctx.stroke();
         }
         ctx.shadowBlur = 0;
       }
 
-      // Draw collectibles (Golden Yellow with Pulsating Glow)
+      // Draw collectibles (Neon Diamonds)
       const glowScale = 0.5 + 0.5 * Math.sin(time / 200);
       const SPAWN_ANIM_DURATION = 400;
 
@@ -1239,19 +1321,34 @@ export default function App() {
         
         if (age < SPAWN_ANIM_DURATION) {
           const progress = age / SPAWN_ANIM_DURATION;
-          // Elastic pop-in
           const scale = Math.sin(progress * Math.PI * 0.5) * 1.2;
           radius *= scale;
         }
 
-        ctx.fillStyle = '#fbbf24'; // amber-400
+        ctx.save();
+        ctx.translate(item.pos.x, item.pos.y);
+        ctx.rotate(time / 1000); // Rotate diamonds
+        
+        ctx.fillStyle = '#fbbf24';
+        ctx.shadowBlur = 15 + 10 * glowScale;
+        ctx.shadowColor = '#fbbf24';
+        
         ctx.beginPath();
-        ctx.arc(item.pos.x, item.pos.y, Math.max(0.1, radius), 0, Math.PI * 2);
+        const r = Math.max(0.1, radius);
+        ctx.moveTo(0, -r * 1.5);
+        ctx.lineTo(r, 0);
+        ctx.lineTo(0, r * 1.5);
+        ctx.lineTo(-r, 0);
+        ctx.closePath();
         ctx.fill();
         
-        ctx.shadowBlur = (10 + 15 * glowScale) * (radius / item.radius);
-        ctx.shadowColor = '#f59e0b'; // amber-500
+        // Inner core
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.4, 0, Math.PI * 2);
         ctx.fill();
+        
+        ctx.restore();
         ctx.shadowBlur = 0;
       }
 
@@ -1275,7 +1372,7 @@ export default function App() {
       const PLACEMENT_EFFECT_DURATION = 300;
 
       for (const item of placedDotsRef.current) {
-        ctx.fillStyle = item.playerId === 'blue' ? '#3b82f6' : '#ef4444';
+        ctx.fillStyle = item.playerId === 'blue' ? '#00ffff' : '#ff00ff';
         
         let radius = item.radius;
         const age = time - item.createdAt;
@@ -1313,24 +1410,31 @@ export default function App() {
       playersRef.current.forEach(player => {
         const RESPAWN_EFFECT_DURATION = 500;
         
-        // Draw trail
+        // Draw trail (Neon Ghosting)
         if (!player.isDead) {
           player.trail.forEach((p, i) => {
-            const opacity = (i / player.trail.length) * 0.5;
-            const size = Math.max(0.1, player.radius * (0.3 + (i / player.trail.length) * 0.7));
+            const opacity = (i / player.trail.length) * 0.4;
+            const size = Math.max(0.1, player.radius * (0.4 + (i / player.trail.length) * 0.6));
             ctx.fillStyle = player.color;
             ctx.globalAlpha = opacity;
+            ctx.shadowBlur = 10 * opacity;
+            ctx.shadowColor = player.color;
             ctx.beginPath();
             ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
             ctx.fill();
           });
           ctx.globalAlpha = 1.0;
+          ctx.shadowBlur = 0;
         }
 
         if (player.isDead && player.deathPos && player.killingSegment) {
           const opacity = 1 - (joltProgress / JOLT_DURATION);
           ctx.save();
           ctx.globalAlpha = opacity;
+          
+          // Glitch effect on death
+          const glitchX = (Math.random() - 0.5) * 20 * (1 - opacity);
+          const glitchY = (Math.random() - 0.5) * 20 * (1 - opacity);
           
           // Draw connecting jolt to the line that killed them
           const v = player.killingSegment.p1;
@@ -1341,31 +1445,38 @@ export default function App() {
           const nx = v.x + t * (w.x - v.x);
           const ny = v.y + t * (w.y - v.y);
           
-          ctx.strokeStyle = player.color === '#3b82f6' ? '#ef4444' : '#3b82f6'; // Color of the killing jolt
-          ctx.lineWidth = 3;
-          ctx.shadowBlur = 10;
+          ctx.strokeStyle = player.color === '#3b82f6' ? '#ef4444' : '#3b82f6';
+          ctx.lineWidth = 4;
+          ctx.shadowBlur = 20;
           ctx.shadowColor = ctx.strokeStyle;
           ctx.beginPath();
-          ctx.moveTo(player.deathPos.x, player.deathPos.y);
+          ctx.moveTo(player.deathPos.x + glitchX, player.deathPos.y + glitchY);
           ctx.lineTo(nx, ny);
           ctx.stroke();
 
-          // Draw fading player dot
+          // Draw fading player dot with glitch
           ctx.fillStyle = player.color;
           ctx.beginPath();
-          ctx.arc(player.deathPos.x, player.deathPos.y, player.radius, 0, Math.PI * 2);
+          ctx.arc(player.deathPos.x + glitchX, player.deathPos.y + glitchY, player.radius * 1.2, 0, Math.PI * 2);
           ctx.fill();
+          
+          // White core
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(player.deathPos.x + glitchX, player.deathPos.y + glitchY, player.radius * 0.4, 0, Math.PI * 2);
+          ctx.fill();
+          
           ctx.restore();
         } else if (!player.isDead) {
           // Draw respawn burst effect
           if (player.lastRespawnTime && time - player.lastRespawnTime < RESPAWN_EFFECT_DURATION) {
             const progress = (time - player.lastRespawnTime) / RESPAWN_EFFECT_DURATION;
-            const burstRadius = Math.max(0.1, player.radius * (1 + progress * 3));
+            const burstRadius = Math.max(0.1, player.radius * (1 + progress * 4));
             const burstOpacity = Math.max(0, 1 - progress);
             
             ctx.save();
             ctx.strokeStyle = player.color;
-            ctx.lineWidth = 2;
+            ctx.lineWidth = 3;
             ctx.globalAlpha = burstOpacity;
             ctx.beginPath();
             ctx.arc(player.pos.x, player.pos.y, burstRadius, 0, Math.PI * 2);
@@ -1378,7 +1489,7 @@ export default function App() {
             ctx.restore();
           }
 
-          // Draw dash effect
+          // Draw dash effect (Neon Streak)
           if (player.dashEffect && time - player.dashEffect.startTime < DASH_DURATION) {
             const progress = (time - player.dashEffect.startTime) / DASH_DURATION;
             const opacity = 1 - progress;
@@ -1386,27 +1497,29 @@ export default function App() {
             ctx.save();
             ctx.strokeStyle = player.color;
             ctx.lineWidth = player.radius * 2 * (1 - progress);
-            ctx.globalAlpha = opacity * 0.5;
+            ctx.globalAlpha = opacity * 0.7;
+            ctx.shadowBlur = 15 * opacity;
+            ctx.shadowColor = player.color;
             ctx.beginPath();
             ctx.moveTo(player.dashEffect.startPos.x, player.dashEffect.startPos.y);
             ctx.lineTo(player.dashEffect.endPos.x, player.dashEffect.endPos.y);
             ctx.stroke();
             
             // Add some particles along the path
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < 8; i++) {
               const t = Math.random();
               const px = player.dashEffect.startPos.x + (player.dashEffect.endPos.x - player.dashEffect.startPos.x) * t;
               const py = player.dashEffect.startPos.y + (player.dashEffect.endPos.y - player.dashEffect.startPos.y) * t;
-              ctx.fillStyle = player.color;
+              ctx.fillStyle = '#ffffff';
               ctx.globalAlpha = opacity * Math.random();
               ctx.beginPath();
-              ctx.arc(px, py, Math.random() * 3, 0, Math.PI * 2);
+              ctx.arc(px, py, Math.random() * 4, 0, Math.PI * 2);
               ctx.fill();
             }
             ctx.restore();
           }
 
-          // Draw burst effect
+          // Draw burst effect (Neon Shockwave + Lightning)
           if (player.burstEffect && time - player.burstEffect.startTime < BURST_DURATION) {
             const progress = (time - player.burstEffect.startTime) / BURST_DURATION;
             const opacity = 1 - progress;
@@ -1422,22 +1535,67 @@ export default function App() {
               const ringOpacity = (1 - ringProgress) * opacity;
               
               ctx.strokeStyle = player.color;
-              ctx.lineWidth = 6 * (1 - ringProgress);
+              ctx.lineWidth = 10 * (1 - ringProgress);
               ctx.globalAlpha = ringOpacity;
+              ctx.shadowBlur = 40 * ringOpacity;
+              ctx.shadowColor = player.color;
+              
               ctx.beginPath();
               ctx.arc(player.burstEffect.pos.x, player.burstEffect.pos.y, radius, 0, Math.PI * 2);
               ctx.stroke();
               
-              // Glow
-              ctx.shadowBlur = 30 * ringOpacity;
-              ctx.shadowColor = player.color;
-              ctx.stroke();
+              // Add lightning arcs within the shockwave
+              if (ringProgress > 0.1 && ringProgress < 0.9) {
+                const arcs = 6;
+                for (let i = 0; i < arcs; i++) {
+                  const angle = (i / arcs) * Math.PI * 2 + time / 200;
+                  const startRadius = radius * 0.7;
+                  const endRadius = radius * 1.1;
+                  
+                  ctx.beginPath();
+                  ctx.moveTo(
+                    player.burstEffect.pos.x + Math.cos(angle) * startRadius,
+                    player.burstEffect.pos.y + Math.sin(angle) * startRadius
+                  );
+                  
+                  // Jagged arc
+                  const midAngle = angle + (Math.random() - 0.5) * 0.5;
+                  const midRadius = (startRadius + endRadius) / 2;
+                  ctx.lineTo(
+                    player.burstEffect.pos.x + Math.cos(midAngle) * midRadius + (Math.random() - 0.5) * 20,
+                    player.burstEffect.pos.y + Math.sin(midAngle) * midRadius + (Math.random() - 0.5) * 20
+                  );
+                  
+                  ctx.lineTo(
+                    player.burstEffect.pos.x + Math.cos(angle) * endRadius,
+                    player.burstEffect.pos.y + Math.sin(angle) * endRadius
+                  );
+                  ctx.stroke();
+                }
+              }
+            }
+            
+            // Electric sparks flying out
+            const sparkCount = 12;
+            for (let i = 0; i < sparkCount; i++) {
+              const angle = (i / sparkCount) * Math.PI * 2 + time / 100;
+              const sparkDist = progress * BURST_DISTANCE * 1.5;
+              const sx = player.burstEffect.pos.x + Math.cos(angle) * sparkDist;
+              const sy = player.burstEffect.pos.y + Math.sin(angle) * sparkDist;
+              
+              ctx.fillStyle = '#ffffff';
+              ctx.globalAlpha = opacity;
+              ctx.beginPath();
+              ctx.arc(sx + (Math.random() - 0.5) * 10, sy + (Math.random() - 0.5) * 10, 2, 0, Math.PI * 2);
+              ctx.fill();
             }
             
             // Central distortion flash
-            const flashRadius = (1 - progress) * player.radius * 4;
-            ctx.fillStyle = 'white';
-            ctx.globalAlpha = opacity * 0.3;
+            const flashRadius = (1 - progress) * player.radius * 6;
+            ctx.fillStyle = '#ffffff';
+            ctx.globalAlpha = opacity * 0.5;
+            ctx.shadowBlur = 30 * opacity;
+            ctx.shadowColor = '#ffffff';
             ctx.beginPath();
             ctx.arc(player.burstEffect.pos.x, player.burstEffect.pos.y, flashRadius, 0, Math.PI * 2);
             ctx.fill();
@@ -1445,16 +1603,37 @@ export default function App() {
             ctx.restore();
           }
 
+          // Draw Player (Neon Orb)
+          ctx.save();
+          ctx.shadowBlur = 25;
+          ctx.shadowColor = player.color;
           ctx.fillStyle = player.color;
+          
+          // Outer glow
           ctx.beginPath();
           ctx.arc(player.pos.x, player.pos.y, player.radius, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = 'white';
+          
+          // Inner core
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(player.pos.x, player.pos.y, player.radius * 0.4, 0, Math.PI * 2);
+          ctx.fill();
+          
+          // Pulsing aura
+          const auraScale = 1 + 0.2 * Math.sin(time / 150);
+          ctx.strokeStyle = player.color;
           ctx.lineWidth = 2;
+          ctx.globalAlpha = 0.4;
+          ctx.beginPath();
+          ctx.arc(player.pos.x, player.pos.y, player.radius * auraScale, 0, Math.PI * 2);
           ctx.stroke();
+          
+          ctx.restore();
         }
       });
 
+      ctx.restore();
       requestAnimationFrame(update);
     };
 
@@ -1474,19 +1653,26 @@ export default function App() {
 
 
   return (
-    <div className="relative w-full h-screen bg-gray-50 overflow-hidden font-sans">
+    <div className="relative w-full h-screen bg-[#0a0a0a] overflow-hidden font-sans">
+      {/* CRT Overlay Effect */}
+      <div className="absolute inset-0 pointer-events-none z-[100] opacity-[0.03]" style={{
+        backgroundImage: 'linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06))',
+        backgroundSize: '100% 4px, 3px 100%'
+      }} />
+      
       <canvas
         ref={canvasRef}
         className="block w-full h-full cursor-none"
       />
       
       {gameState === 'menu' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black text-white p-8 text-center z-50 overflow-auto">
-          <div className="absolute inset-0 opacity-20 pointer-events-none" style={{
-            backgroundImage: `linear-gradient(to right, #3b82f6 1px, transparent 1px), linear-gradient(to bottom, #3b82f6 1px, transparent 1px)`,
-            backgroundSize: '40px 40px',
-            transform: 'perspective(500px) rotateX(60deg) translateY(0)',
-            transformOrigin: 'top'
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#050505] text-white p-8 text-center z-50 overflow-auto">
+          {/* Retro Grid Floor */}
+          <div className="absolute inset-0 opacity-30 pointer-events-none" style={{
+            backgroundImage: `linear-gradient(to right, #ff00ff 1px, transparent 1px), linear-gradient(to bottom, #00ffff 1px, transparent 1px)`,
+            backgroundSize: '60px 60px',
+            transform: 'perspective(600px) rotateX(70deg) translateY(100px)',
+            transformOrigin: 'center bottom'
           }} />
           
           <div className="relative z-10 flex flex-col items-center justify-center w-full min-h-full">
@@ -1503,7 +1689,8 @@ export default function App() {
               >
                 <motion.h1 
                   layoutId="logo-text"
-                  className="text-8xl md:text-9xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-blue-400 to-purple-600 drop-shadow-[0_0_30px_rgba(59,130,246,0.8)] group-hover:drop-shadow-[0_0_50px_rgba(59,130,246,1)] transition-all duration-500"
+                  className="text-8xl md:text-9xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-cyan-400 via-white to-fuchsia-600 drop-shadow-[0_0_40px_rgba(0,255,255,0.8)] group-hover:drop-shadow-[0_0_60px_rgba(255,0,255,1)] transition-all duration-500 pr-12 overflow-visible"
+                  style={{ WebkitTextStroke: '2px rgba(255,255,255,0.3)' }}
                 >
                   JOLT GRID
                 </motion.h1>
@@ -1511,9 +1698,9 @@ export default function App() {
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: 0.5 }}
-                  className="text-xs font-mono tracking-[0.8em] text-blue-400 uppercase opacity-50 mt-4 group-hover:opacity-100 transition-opacity"
+                  className="text-sm font-mono tracking-[1em] text-cyan-400 uppercase opacity-60 mt-6 group-hover:opacity-100 transition-opacity animate-pulse"
                 >
-                  Click to Initialize
+                  PRESS TO INITIALIZE
                 </motion.p>
               </motion.div>
             ) : (
@@ -1527,12 +1714,13 @@ export default function App() {
                 >
                   <motion.h1 
                     layoutId="logo-text"
-                    className="text-8xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-blue-400 to-purple-600 drop-shadow-[0_0_20px_rgba(59,130,246,0.6)] group-hover:drop-shadow-[0_0_30px_rgba(59,130,246,0.8)] transition-all duration-300"
+                    className="text-7xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-cyan-400 via-white to-fuchsia-600 drop-shadow-[0_0_25px_rgba(0,255,255,0.6)] group-hover:drop-shadow-[0_0_40px_rgba(255,0,255,0.8)] transition-all duration-300 pr-10 overflow-visible"
+                    style={{ WebkitTextStroke: '1px rgba(255,255,255,0.2)' }}
                   >
                     JOLT GRID
                   </motion.h1>
-                  <p className="text-xs font-mono tracking-[0.5em] text-blue-400 uppercase opacity-70 group-hover:opacity-100 transition-opacity">
-                    Neural Combat Simulation v1.1.0
+                  <p className="text-xs font-mono tracking-[0.5em] text-cyan-400 uppercase opacity-70 group-hover:opacity-100 transition-opacity">
+                    Neural Combat Simulation v1.2.0
                   </p>
                 </motion.div>
 
@@ -1543,50 +1731,50 @@ export default function App() {
                   className="w-full flex flex-col items-center gap-12"
                 >
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-lg">
-                    <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-6 space-y-6">
+                    <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-2xl p-6 space-y-6">
                       <div className="flex justify-center">
-                        <div className="text-[10px] font-black text-blue-400 tracking-[0.2em] uppercase">Player 01</div>
+                        <div className="text-[10px] font-black text-cyan-400 tracking-[0.2em] uppercase">Player 01</div>
                       </div>
                       <div className="space-y-3 font-mono">
-                        <div className="flex justify-between items-center border-b border-blue-500/10 pb-2">
+                        <div className="flex justify-between items-center border-b border-cyan-500/10 pb-2">
                           <span className="text-[10px] text-gray-500 uppercase tracking-widest">Move</span>
-                          <span className="text-sm font-black italic text-blue-400">WASD</span>
+                          <span className="text-sm font-black italic text-cyan-400">WASD</span>
                         </div>
-                        <div className="flex justify-between items-center border-b border-blue-500/10 pb-2">
+                        <div className="flex justify-between items-center border-b border-cyan-500/10 pb-2">
                           <span className="text-[10px] text-gray-500 uppercase tracking-widest">Place</span>
-                          <span className="text-sm font-black text-blue-400">1</span>
+                          <span className="text-sm font-black text-cyan-400">1</span>
                         </div>
-                        <div className="flex justify-between items-center border-b border-blue-500/10 pb-2">
+                        <div className="flex justify-between items-center border-b border-cyan-500/10 pb-2">
                           <span className="text-[10px] text-gray-500 uppercase tracking-widest">Burst</span>
-                          <span className="text-sm font-black text-blue-400">2</span>
+                          <span className="text-sm font-black text-cyan-400">2</span>
                         </div>
                         <div className="flex justify-between items-center">
                           <span className="text-[10px] text-gray-500 uppercase tracking-widest">Dash</span>
-                          <span className="text-sm font-black text-blue-400">3</span>
+                          <span className="text-sm font-black text-cyan-400">3</span>
                         </div>
                       </div>
                     </div>
 
-                    <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 space-y-6">
+                    <div className="bg-fuchsia-500/10 border border-fuchsia-500/20 rounded-2xl p-6 space-y-6">
                       <div className="flex justify-center">
-                        <div className="text-[10px] font-black text-red-400 tracking-[0.2em] uppercase">Player 02</div>
+                        <div className="text-[10px] font-black text-fuchsia-400 tracking-[0.2em] uppercase">Player 02</div>
                       </div>
                       <div className="space-y-3 font-mono">
-                        <div className="flex justify-between items-center border-b border-red-500/10 pb-2">
+                        <div className="flex justify-between items-center border-b border-fuchsia-500/10 pb-2">
                           <span className="text-[10px] text-gray-500 uppercase tracking-widest">Move</span>
-                          <span className="text-sm font-black italic text-red-400">ARROWS</span>
+                          <span className="text-sm font-black italic text-fuchsia-400">ARROWS</span>
                         </div>
-                        <div className="flex justify-between items-center border-b border-red-500/10 pb-2">
+                        <div className="flex justify-between items-center border-b border-fuchsia-500/10 pb-2">
                           <span className="text-[10px] text-gray-500 uppercase tracking-widest">Place</span>
-                          <span className="text-sm font-black text-red-400">I</span>
+                          <span className="text-sm font-black text-fuchsia-400">I</span>
                         </div>
-                        <div className="flex justify-between items-center border-b border-red-500/10 pb-2">
+                        <div className="flex justify-between items-center border-b border-fuchsia-500/10 pb-2">
                           <span className="text-[10px] text-gray-500 uppercase tracking-widest">Burst</span>
-                          <span className="text-sm font-black text-red-400">O</span>
+                          <span className="text-sm font-black text-fuchsia-400">O</span>
                         </div>
                         <div className="flex justify-between items-center">
                           <span className="text-[10px] text-gray-500 uppercase tracking-widest">Dash</span>
-                          <span className="text-sm font-black text-red-400">P</span>
+                          <span className="text-sm font-black text-fuchsia-400">P</span>
                         </div>
                       </div>
                     </div>
@@ -1598,7 +1786,7 @@ export default function App() {
                         <>
                           <button 
                             onClick={() => setShowConfig(true)}
-                            className="w-14 h-14 flex items-center justify-center rounded-2xl bg-gray-900/50 border border-gray-700 text-gray-400 hover:text-white hover:border-blue-500/50 transition-all active:scale-90"
+                            className="w-14 h-14 flex items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)] hover:scale-110 transition-all active:scale-90"
                             title="Configuration"
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
@@ -1607,7 +1795,7 @@ export default function App() {
                             onClick={toggleMusic}
                             className={`w-14 h-14 flex items-center justify-center rounded-2xl border transition-all active:scale-90 ${
                               musicEnabled 
-                                ? 'bg-blue-500/20 border-blue-500/40 text-blue-400' 
+                                ? 'bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)]' 
                                 : 'bg-gray-900/50 border-gray-700 text-gray-500'
                             }`}
                             title={musicEnabled ? "Disable Music" : "Enable Music"}
@@ -1622,7 +1810,7 @@ export default function App() {
                             onClick={() => setConfig(prev => ({ ...prev, aiEnabled: !prev.aiEnabled }))}
                             className={`w-14 h-14 flex items-center justify-center rounded-2xl border transition-all active:scale-90 ${
                               config.aiEnabled 
-                                ? 'bg-purple-500/20 border-purple-500/40 text-purple-400' 
+                                ? 'bg-gradient-to-br from-cyan-400 to-fuchsia-600 border-transparent text-white shadow-[0_0_20px_rgba(0,255,255,0.3)]' 
                                 : 'bg-gray-900/50 border-gray-700 text-gray-500'
                             }`}
                             title={config.aiEnabled ? "Disable AI Opponent" : "Enable AI Opponent"}
@@ -1636,7 +1824,7 @@ export default function App() {
                     {!audioStarted ? (
                       <button 
                         onClick={handleStartAudio}
-                        className="group relative px-8 py-6 bg-blue-600 hover:bg-blue-500 text-white font-black uppercase tracking-widest rounded-3xl transition-all shadow-[0_0_30px_rgba(59,130,246,0.4)] active:scale-95 overflow-hidden"
+                        className="group relative px-8 py-6 bg-gradient-to-r from-cyan-500 to-fuchsia-600 text-white font-black uppercase tracking-widest rounded-3xl transition-all shadow-[0_0_30px_rgba(0,255,255,0.4)] active:scale-95 overflow-hidden"
                       >
                         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
                         INITIALIZE AUDIO
@@ -1646,7 +1834,7 @@ export default function App() {
                         onClick={() => {
                           resetGame(false);
                         }}
-                        className="group relative px-8 py-6 bg-gradient-to-r from-blue-600 to-purple-600 text-white font-black uppercase tracking-widest rounded-3xl transition-all shadow-[0_0_40px_rgba(59,130,246,0.5)] hover:shadow-[0_0_60px_rgba(59,130,246,0.7)] hover:scale-105 active:scale-95 overflow-hidden"
+                        className="group relative px-8 py-6 bg-gradient-to-r from-cyan-500 to-fuchsia-600 text-white font-black uppercase tracking-widest rounded-3xl transition-all shadow-[0_0_40px_rgba(0,255,255,0.5)] hover:shadow-[0_0_60px_rgba(0,255,255,0.7)] hover:scale-105 active:scale-95 overflow-hidden"
                       >
                         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
                         <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-white/10" />
@@ -1667,10 +1855,10 @@ export default function App() {
 
       {showConfig && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/80 backdrop-blur-xl z-[60] p-4">
-          <div className="w-full max-w-md bg-gray-900 border border-blue-500/30 rounded-[2rem] shadow-[0_0_50px_rgba(59,130,246,0.2)] overflow-hidden">
+          <div className="w-full max-w-md bg-gray-900 border border-cyan-500/30 rounded-[2rem] shadow-[0_0_50px_rgba(0,255,255,0.2)] overflow-hidden">
             <div className="p-8 space-y-8">
               <div className="flex justify-between items-center border-b border-gray-800 pb-4">
-                <h3 className="text-xl font-black italic tracking-tighter text-blue-400 uppercase">System Config</h3>
+                <h3 className="text-xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-fuchsia-500 uppercase">System Config</h3>
                 <button 
                   onClick={() => setShowConfig(false)}
                   className="text-gray-500 hover:text-white transition-colors"
@@ -1681,7 +1869,7 @@ export default function App() {
               
               <div className="space-y-8">
                 <div className="space-y-3">
-                  <div className="flex justify-between text-[10px] font-mono text-blue-400 uppercase tracking-widest">
+                  <div className="flex justify-between text-[10px] font-mono text-cyan-400 uppercase tracking-widest">
                     <span>Jolt Range</span>
                     <span className="text-white">{config.joltDistance}px</span>
                   </div>
@@ -1689,12 +1877,12 @@ export default function App() {
                     type="range" min="100" max="500" step="10"
                     value={config.joltDistance}
                     onChange={(e) => setConfig(prev => ({ ...prev, joltDistance: parseInt(e.target.value) }))}
-                    className="w-full accent-blue-500 bg-gray-800 h-1.5 rounded-full appearance-none cursor-pointer"
+                    className="w-full accent-cyan-500 bg-gray-800 h-1.5 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
 
                 <div className="space-y-3">
-                  <div className="flex justify-between text-[10px] font-mono text-blue-400 uppercase tracking-widest">
+                  <div className="flex justify-between text-[10px] font-mono text-cyan-400 uppercase tracking-widest">
                     <span>Move Speed</span>
                     <span className="text-white">{config.moveSpeed.toFixed(2)}</span>
                   </div>
@@ -1702,12 +1890,12 @@ export default function App() {
                     type="range" min="0.1" max="1.0" step="0.05"
                     value={config.moveSpeed}
                     onChange={(e) => setConfig(prev => ({ ...prev, moveSpeed: parseFloat(e.target.value) }))}
-                    className="w-full accent-blue-500 bg-gray-800 h-1.5 rounded-full appearance-none cursor-pointer"
+                    className="w-full accent-cyan-500 bg-gray-800 h-1.5 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
 
                 <div className="space-y-3">
-                  <div className="flex justify-between text-[10px] font-mono text-blue-400 uppercase tracking-widest">
+                  <div className="flex justify-between text-[10px] font-mono text-cyan-400 uppercase tracking-widest">
                     <span>Kill Limit</span>
                     <span className="text-white">{config.killLimit === 0 ? 'Unlimited' : `${config.killLimit} Kills`}</span>
                   </div>
@@ -1715,14 +1903,14 @@ export default function App() {
                     type="range" min="0" max="20" step="1"
                     value={config.killLimit}
                     onChange={(e) => setConfig(prev => ({ ...prev, killLimit: parseInt(e.target.value) }))}
-                    className="w-full accent-blue-500 bg-gray-800 h-1.5 rounded-full appearance-none cursor-pointer"
+                    className="w-full accent-cyan-500 bg-gray-800 h-1.5 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
               </div>
 
               <button 
                 onClick={() => setShowConfig(false)}
-                className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold uppercase tracking-widest rounded-xl transition-all active:scale-95"
+                className="w-full py-4 bg-gradient-to-r from-cyan-600 to-fuchsia-600 hover:from-cyan-500 hover:to-fuchsia-500 text-white font-bold uppercase tracking-widest rounded-xl transition-all active:scale-95 shadow-[0_0_20px_rgba(0,255,255,0.2)]"
               >
                 Apply Changes
               </button>
@@ -1733,23 +1921,23 @@ export default function App() {
 
       {gameState === 'paused' && (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50">
-          <div className="w-72 p-8 bg-gray-900/80 border border-blue-500/30 rounded-3xl shadow-[0_0_50px_rgba(59,130,246,0.2)] flex flex-col gap-4">
+          <div className="w-72 p-8 bg-gray-900/80 border border-cyan-500/30 rounded-3xl shadow-[0_0_50px_rgba(0,255,255,0.2)] flex flex-col gap-4">
             <div className="space-y-1 mb-4">
-              <h2 className="text-center text-2xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-blue-400 to-purple-600">
+              <h2 className="text-center text-2xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-fuchsia-600">
                 PAUSED
               </h2>
-              <div className="h-px w-full bg-gradient-to-r from-transparent via-blue-500/30 to-transparent" />
+              <div className="h-px w-full bg-gradient-to-r from-transparent via-cyan-500/30 to-transparent" />
             </div>
             
             <button 
               onClick={() => setGameState('playing')}
-              className="w-full bg-blue-600/20 border border-blue-500/40 text-blue-400 py-4 rounded-xl font-bold uppercase tracking-widest hover:bg-blue-600 hover:text-white transition-all active:scale-95"
+              className="w-full bg-cyan-600/20 border border-cyan-500/40 text-cyan-400 py-4 rounded-xl font-bold uppercase tracking-widest hover:bg-cyan-600 hover:text-white transition-all active:scale-95"
             >
               Resume
             </button>
             <button 
               onClick={() => resetGame(true)}
-              className="w-full bg-red-600/10 border border-red-500/20 text-red-400/70 py-4 rounded-xl font-bold uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all active:scale-95"
+              className="w-full bg-fuchsia-600/10 border border-fuchsia-500/20 text-fuchsia-400/70 py-4 rounded-xl font-bold uppercase tracking-widest hover:bg-fuchsia-600 hover:text-white transition-all active:scale-95"
             >
               Abort Mission
             </button>
@@ -1765,11 +1953,11 @@ export default function App() {
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="w-full max-w-2xl p-12 bg-gray-900/50 border-y border-blue-500/20 flex flex-col items-center gap-12 relative"
+              className="w-full max-w-2xl p-12 bg-gray-900/50 border-y border-cyan-500/20 flex flex-col items-center gap-12 relative"
             >
               {/* Decorative Background Elements */}
               <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-20">
-                <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-500/20 via-transparent to-transparent" />
+                <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-cyan-500/20 via-transparent to-transparent" />
               </div>
 
               <div className="space-y-4 text-center relative">
@@ -1777,7 +1965,7 @@ export default function App() {
                   initial={{ opacity: 0, y: -20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.3 }}
-                  className="text-xs font-mono tracking-[1em] text-blue-400 uppercase opacity-50"
+                  className="text-xs font-mono tracking-[1em] text-cyan-400 uppercase opacity-50"
                 >
                   Simulation Terminated
                 </motion.div>
@@ -1786,11 +1974,11 @@ export default function App() {
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   transition={{ delay: 0.4, type: 'spring' }}
-                  className={`text-7xl md:text-8xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-b ${
-                    winner === 'blue' ? 'from-blue-400 to-blue-600' : 'from-red-400 to-red-600'
-                  } drop-shadow-[0_0_30px_rgba(59,130,246,0.5)]`}
+                  className={`text-7xl md:text-8xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-r ${
+                    winner === 'blue' ? 'from-cyan-400 to-cyan-600' : 'from-fuchsia-400 to-fuchsia-600'
+                  } drop-shadow-[0_0_30px_rgba(0,255,255,0.5)]`}
                 >
-                  {winner === 'blue' ? 'BLUE' : 'RED'} VICTOR
+                  {winner === 'blue' ? 'TEAL' : 'PINK'} VICTOR
                 </motion.h2>
 
                 <motion.div
@@ -1800,13 +1988,13 @@ export default function App() {
                   className="flex justify-center gap-8 mt-8"
                 >
                   <div className="text-center">
-                    <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-1">Blue Kills</div>
-                    <div className="text-3xl font-black text-blue-400">{scores.blueKills}</div>
+                    <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-1">Teal Kills</div>
+                    <div className="text-3xl font-black text-cyan-400">{scores.blueKills}</div>
                   </div>
                   <div className="w-px h-12 bg-gray-800" />
                   <div className="text-center">
-                    <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-1">Red Kills</div>
-                    <div className="text-3xl font-black text-red-400">{scores.redKills}</div>
+                    <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-1">Pink Kills</div>
+                    <div className="text-3xl font-black text-fuchsia-400">{scores.redKills}</div>
                   </div>
                 </motion.div>
               </div>
@@ -1819,7 +2007,7 @@ export default function App() {
               >
                 <button 
                   onClick={() => resetGame(false)}
-                  className="flex-1 group relative px-8 py-5 bg-blue-600 text-white font-black uppercase tracking-widest rounded-2xl transition-all shadow-[0_0_30px_rgba(59,130,246,0.3)] hover:shadow-[0_0_50px_rgba(59,130,246,0.5)] hover:scale-105 active:scale-95 overflow-hidden"
+                  className="flex-1 group relative px-8 py-5 bg-gradient-to-r from-cyan-600 to-fuchsia-600 text-white font-black uppercase tracking-widest rounded-2xl transition-all shadow-[0_0_30px_rgba(0,255,255,0.3)] hover:shadow-[0_0_50px_rgba(0,255,255,0.5)] hover:scale-105 active:scale-95 overflow-hidden"
                 >
                   <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
                   Restart
@@ -1843,21 +2031,21 @@ export default function App() {
       {gameState !== 'menu' && (
         <>
           <div className="absolute top-8 left-8 pointer-events-none flex flex-col gap-2">
-            <div className="bg-black/60 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(59,130,246,0.2)] flex items-center gap-3">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400">AMMO</div>
-              <div className="text-xl font-black text-blue-500 tabular-nums">{scores.blue}</div>
-              <div className="w-px h-4 bg-blue-500/30" />
-              <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400">KILLS</div>
-              <div className="text-xl font-black text-blue-500 tabular-nums">{scores.blueKills}</div>
+            <div className="bg-black/60 backdrop-blur-md border border-cyan-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(0,255,255,0.2)] flex items-center gap-3">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-cyan-400">AMMO</div>
+              <div className="text-xl font-black text-cyan-500 tabular-nums">{scores.blue}</div>
+              <div className="w-px h-4 bg-cyan-500/30" />
+              <div className="text-[10px] font-bold uppercase tracking-widest text-cyan-400">KILLS</div>
+              <div className="text-xl font-black text-cyan-500 tabular-nums">{scores.blueKills}</div>
             </div>
-            <div className="bg-black/60 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(59,130,246,0.2)] flex items-center gap-3">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400">POWER:</div>
+            <div className="bg-black/60 backdrop-blur-md border border-cyan-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(0,255,255,0.2)] flex items-center gap-3">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-cyan-400">POWER:</div>
               <div className="w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
                 <div 
                   className="h-full"
                   style={{ 
                     width: `${dashCooldowns.blue * 100}%`,
-                    backgroundColor: dashCooldowns.blue >= 1 ? '#3b82f6' : '#4b5563'
+                    backgroundColor: dashCooldowns.blue >= 1 ? '#00ffff' : '#4b5563'
                   }}
                 />
               </div>
@@ -1865,21 +2053,21 @@ export default function App() {
           </div>
 
           <div className="absolute top-8 right-8 pointer-events-none flex flex-col gap-2 items-end">
-            <div className="bg-black/60 backdrop-blur-md border border-red-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.2)] flex items-center gap-3">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-red-400">AMMO</div>
-              <div className="text-xl font-black text-red-500 tabular-nums">{scores.red}</div>
-              <div className="w-px h-4 bg-red-500/30" />
-              <div className="text-[10px] font-bold uppercase tracking-widest text-red-400">KILLS</div>
-              <div className="text-xl font-black text-red-500 tabular-nums">{scores.redKills}</div>
+            <div className="bg-black/60 backdrop-blur-md border border-fuchsia-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(255,0,255,0.2)] flex items-center gap-3">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-fuchsia-400">AMMO</div>
+              <div className="text-xl font-black text-fuchsia-500 tabular-nums">{scores.red}</div>
+              <div className="w-px h-4 bg-fuchsia-500/30" />
+              <div className="text-[10px] font-bold uppercase tracking-widest text-fuchsia-400">KILLS</div>
+              <div className="text-xl font-black text-fuchsia-500 tabular-nums">{scores.redKills}</div>
             </div>
-            <div className="bg-black/60 backdrop-blur-md border border-red-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(239,68,68,0.2)] flex items-center gap-3">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-red-400">POWER:</div>
+            <div className="bg-black/60 backdrop-blur-md border border-fuchsia-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(255,0,255,0.2)] flex items-center gap-3">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-fuchsia-400">POWER:</div>
               <div className="w-24 h-2 bg-gray-800 rounded-full overflow-hidden">
                 <div 
                   className="h-full"
                   style={{ 
                     width: `${dashCooldowns.red * 100}%`,
-                    backgroundColor: dashCooldowns.red >= 1 ? '#ef4444' : '#4b5563'
+                    backgroundColor: dashCooldowns.red >= 1 ? '#ff00ff' : '#4b5563'
                   }}
                 />
               </div>
